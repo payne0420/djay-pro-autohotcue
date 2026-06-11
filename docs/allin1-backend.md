@@ -66,6 +66,12 @@ override with `AUTOHOTCUE_MLX_CACHE_GB`) and calls `mlx.core.clear_cache()` afte
 `segment_structure_allin1` so memory returns between tracks. Loaded demucs/model weights are
 unchanged; only transient GPU buffer cache is reclaimed.
 
+Measured after the cap (Kelsier, 222 s track, warm weights): peak transient footprint
+~14 GB during demucs separation, returning to ~0 at process exit. The peak is the live
+working set of separation itself — inherent to the model, scales with track length — so
+expect double-digit-GB *bursts* during an `ml-allin1` analysis on a 32 GB machine, but no
+sustained occupancy between tracks or after the run.
+
 ## Rejected paths (errors)
 
 1. **mlx-audio-io 1.3.9** (all-in-one-mlx default): `TypeError: Unable to convert function return value to a Python type!` in `mlx_audio_io.load()` on Python 3.13 — fixed in 1.3.10.
