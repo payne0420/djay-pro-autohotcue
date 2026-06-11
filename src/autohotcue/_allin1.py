@@ -32,6 +32,11 @@ class _AllInOneForwardWrapper:
         self._model = model
         self.cfg = model.cfg  # type: ignore[attr-defined]
 
+    @property
+    def state(self):
+        # helpers' compile_forward path captures model.state via mx.compile(inputs=...)
+        return self._model.state  # type: ignore[attr-defined]
+
     def __call__(self, x, return_embeddings: bool = False):  # noqa: ARG002
         return self._model(x)
 
@@ -106,13 +111,18 @@ def _ensure_mlx_env() -> None:
 
 
 def _configure_mlx_cache() -> None:
-    """Cap MLX Metal buffer cache (default 6 GB; override via AUTOHOTCUE_MLX_CACHE_GB)."""
+    """Cap MLX Metal buffer cache (default 3 GB; override via AUTOHOTCUE_MLX_CACHE_GB).
+
+    Measured (M2 Max 32 GB, docs/allin1-performance.md): 3 GB matches 6 GB on
+    runtime while cutting peak phys_footprint ~3-4 GB; uncapped is 5-6x slower
+    once the cache outgrows RAM.
+    """
     global _mlx_cache_configured
     if _mlx_cache_configured:
         return
     import mlx.core as mx
 
-    gb = float(os.environ.get("AUTOHOTCUE_MLX_CACHE_GB", "6"))
+    gb = float(os.environ.get("AUTOHOTCUE_MLX_CACHE_GB", "3"))
     mx.set_cache_limit(int(gb * (1024**3)))
     _mlx_cache_configured = True
 

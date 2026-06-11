@@ -165,12 +165,37 @@ def test_energy_ranks_partial_tail_slice(monkeypatch):
 def test_allin1_forward_wrapper():
     class _M:
         cfg = object()
+        state = {"w": 1}
 
         def __call__(self, x):
             return x
 
     w = _AllInOneForwardWrapper(_M())
     assert w(np.array([1.0]), return_embeddings=True) == 1.0
+    # compile_forward path captures model.state via mx.compile(inputs=...)
+    assert w.state == {"w": 1}
+
+
+def test_configure_mlx_cache_default_and_override(monkeypatch):
+    import autohotcue._allin1 as mod
+
+    calls: list[int] = []
+    fake_core = types.ModuleType("mlx.core")
+    fake_core.set_cache_limit = calls.append
+    fake_mlx = types.ModuleType("mlx")
+    fake_mlx.core = fake_core
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_core)
+
+    monkeypatch.delenv("AUTOHOTCUE_MLX_CACHE_GB", raising=False)
+    monkeypatch.setattr(mod, "_mlx_cache_configured", False)
+    mod._configure_mlx_cache()
+    assert calls == [3 * 1024**3]
+
+    monkeypatch.setenv("AUTOHOTCUE_MLX_CACHE_GB", "6")
+    monkeypatch.setattr(mod, "_mlx_cache_configured", False)
+    mod._configure_mlx_cache()
+    assert calls[-1] == 6 * 1024**3
 
 
 def test_resolve_weights_dir_env_overrides_stale_cache(monkeypatch, tmp_path):

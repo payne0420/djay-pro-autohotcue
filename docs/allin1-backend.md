@@ -45,15 +45,16 @@ uv run autohotcue bench truth.json --engines ml,ml-allin1,legacy
 
 ## Runtime (this machine, Python 3.13.3, MPS beat_this, mlx-allin1 cold per process)
 
-| Track | ml (librosa) | ml-allin1 |
-|-------|-------------|-----------|
-| Adam Port — Move (Extended) | 8.0s | 80.2s |
-| Adassiya — Headlights (Extended) | 7.6s | 130.8s |
-| Maty Owl — Green & Blue (Extended) | 8.0s | 260.4s |
-| O'Flynn — Kelsier | 5.7s | 57.3s |
+| Track | audio | ml (librosa) | ml-allin1 |
+|-------|-------|-------------|-----------|
+| O'Flynn — Kelsier | 222s | 5.7s | 14.8s |
+| Maty Owl — Green & Blue (Extended) | 396s | 8.0s | 23.6s |
 
-ml-allin1 cost is dominated by demucs-mlx separation + harmonix-fold0 inference; beat_this
-is unchanged. Subsequent tracks in one process reuse loaded demucs/model singletons.
+Earlier figures of 57-260s/track were measured under GPU/memory contention and
+are wrong by 4-11x — see `docs/allin1-performance.md` for the clean per-phase
+breakdown. ml-allin1 cost is dominated by demucs-mlx separation (~60% of
+per-track cost, linear in duration); beat_this is unchanged. Subsequent tracks
+in one process reuse loaded demucs/model singletons (~2.5-4s saved).
 
 ## Memory
 
@@ -61,16 +62,19 @@ On Apple Silicon, MLX retains freed Metal buffers in an in-process cache by desi
 across allocations). In a long folder run this can look like a leak: `phys_footprint` climbed
 to ~25 GB (all `IOAccelerator`) while Python `malloc` stayed ~216 MB.
 
-autohotcue caps that cache at backend init via `mlx.core.set_cache_limit` (default **6 GB**,
+autohotcue caps that cache at backend init via `mlx.core.set_cache_limit` (default **3 GB**,
 override with `AUTOHOTCUE_MLX_CACHE_GB`) and calls `mlx.core.clear_cache()` after each
 `segment_structure_allin1` so memory returns between tracks. Loaded demucs/model weights are
 unchanged; only transient GPU buffer cache is reclaimed.
 
-Measured after the cap (Kelsier, 222 s track, warm weights): peak transient footprint
-~14 GB during demucs separation, returning to ~0 at process exit. The peak is the live
-working set of separation itself — inherent to the model, scales with track length — so
-expect double-digit-GB *bursts* during an `ml-allin1` analysis on a 32 GB machine, but no
-sustained occupancy between tracks or after the run.
+The cap is load-bearing for speed, not just footprint: uncapped, the cache grows to
+~29 GB on a 32 GB machine and memory pressure makes separation **5-6x slower**
+(measured: Kelsier demucs 7s capped vs 40-49s uncapped). 3 GB and 6 GB run at
+identical speed; 3 GB trims peak footprint a further 3-4 GB (Kelsier ~10 GB,
+Green & Blue 396s ~17 GB). The peak is the live working set of separation itself —
+inherent to the model, scales with track length — so expect double-digit-GB *bursts*
+during an `ml-allin1` analysis on a 32 GB machine, but no sustained occupancy between
+tracks or after the run. Full measurements: `docs/allin1-performance.md`.
 
 ## Rejected paths (errors)
 
