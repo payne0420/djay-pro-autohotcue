@@ -112,7 +112,7 @@ def cmd_propose(args):
                 ex.submit(
                     analysis.analyze,
                     p,
-                    args.bpm or 120.0,
+                    args.bpm,
                     args.engine,
                     None,
                     jobs,
@@ -137,7 +137,7 @@ def cmd_propose(args):
             try:
                 track, prop = analysis.analyze(
                     path,
-                    known_bpm=args.bpm or 120.0,
+                    known_bpm=args.bpm,
                     engine=args.engine,
                     jobs=1,
                 )
@@ -158,7 +158,7 @@ def cmd_viz(args):
     backends.init_worker(1)
     track, prop = analysis.analyze(
         args.path,
-        known_bpm=args.bpm or 120.0,
+        known_bpm=args.bpm,
         engine=args.engine,
         jobs=1,
     )

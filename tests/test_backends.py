@@ -1,10 +1,14 @@
 """Tests for analysis backends."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from autohotcue.backends import bpm_octave_ratio
+
+_BEAT_THIS_CKPT = Path.home() / ".cache/torch/hub/checkpoints/beat_this-final0.ckpt"
 
 
 @pytest.mark.parametrize(
@@ -25,17 +29,20 @@ def test_bpm_octave_ratio_invalid() -> None:
     assert bpm_octave_ratio(0.0, 120.0) == float("inf")
 
 
-pytest.importorskip("beat_this.inference")
-
-
 def test_track_beats_callable() -> None:
+    pytest.importorskip("beat_this.inference")
     from autohotcue.backends import track_beats
 
     assert callable(track_beats)
 
 
+@pytest.mark.skipif(
+    not _BEAT_THIS_CKPT.is_file(),
+    reason="beat_this checkpoint not cached (download once online)",
+)
 def test_track_beats_on_click(tmp_path) -> None:
     """Run beat_this on a synthetic click track when checkpoint is available."""
+    pytest.importorskip("beat_this.inference")
     torch = pytest.importorskip("torch")
     pytest.importorskip("soundfile")
     from autohotcue.analysis import decode
@@ -62,6 +69,14 @@ def test_track_beats_on_click(tmp_path) -> None:
     assert beat.duration_s == pytest.approx(duration_s, abs=0.2)
     assert len(beat.beats) >= 1
     assert beat.bpm == pytest.approx(bpm, rel=0.15)
+
+
+def test_energy_rank_ties_are_uniform() -> None:
+    from scipy.stats import rankdata
+
+    energies = [1.0, 1.0, 1.0, 1.0]
+    ranks = (rankdata(energies, method="average") - 1) / max(1, len(energies) - 1)
+    assert all(r == pytest.approx(0.5) for r in ranks)
 
 
 def test_segment_structure_empty_beats() -> None:

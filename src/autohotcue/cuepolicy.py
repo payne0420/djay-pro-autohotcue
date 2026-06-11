@@ -32,8 +32,12 @@ def _normalize_segments(segments: list[Segment], bar_s: float) -> list[Segment]:
         seg = segs[i]
         while i + 1 < len(segs) and (seg.end - seg.start) < bar_s:
             nxt = segs[i + 1]
+            if seg.end >= nxt.start - 1e-9:
+                merged_start = nxt.start
+            else:
+                merged_start = seg.start
             seg = Segment(
-                start=nxt.start,
+                start=merged_start,
                 end=nxt.end,
                 label=nxt.label,
                 energy_rank=max(seg.energy_rank, nxt.energy_rank),
@@ -125,20 +129,6 @@ def _min_rank_between(
             best_rank = seg.energy_rank
             best = i
     return best
-
-
-def _second_high_after_d(
-    segments: list[Segment],
-    high: set[int],
-    d_idx: int,
-) -> int | None:
-    found = 0
-    for i, seg in enumerate(segments):
-        if i in high and i > d_idx:
-            found += 1
-            if found == 2:
-                return i
-    return None
 
 
 def _apply_outro_guard(
@@ -288,7 +278,8 @@ def propose_cues(
     if e_t is not None:
         f_idx = _first_high_after(segments, high, e_t)
     elif d_idx is not None:
-        f_idx = _second_high_after_d(segments, high, d_idx)
+        # E omitted: F is the second HIGH overall (first HIGH after D).
+        f_idx = _first_high_after(segments, high, segments[d_idx].start)
 
     if f_idx is not None:
         f_t = _snap(beat, segments[f_idx].start)

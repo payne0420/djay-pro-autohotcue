@@ -252,10 +252,11 @@ def segment_structure(
     if not segment_energies:
         return StructureAnalysis(segments=[], source="librosa")
 
-    order = np.argsort(segment_energies)
-    ranks = np.empty(len(segment_energies))
-    for rank_pos, idx in enumerate(order):
-        ranks[idx] = rank_pos / max(1, len(segment_energies) - 1)
+    from scipy.stats import rankdata
+
+    ranks = (rankdata(segment_energies, method="average") - 1) / max(
+        1, len(segment_energies) - 1
+    )
 
     segments = _label_segments(boundaries, [float(r) for r in ranks])
     return StructureAnalysis(segments=segments, source="librosa")

@@ -64,6 +64,33 @@ def test_canonical_edm_all_eight_on_downbeats():
 
     pos = p.positions
     assert pos["A"] <= pos["B"] <= pos["C"] < pos["D"] < pos["E"] < pos["F"] <= pos["G"] == pos["H"]
+    assert pos["A"] == pytest.approx(0.0)
+    assert pos["B"] == pytest.approx(16 * bar)
+    assert pos["C"] == pytest.approx(16 * bar)
+    assert pos["D"] == pytest.approx(32 * bar)
+    assert pos["E"] == pytest.approx(64 * bar)
+    assert pos["F"] == pytest.approx(80 * bar)
+    assert pos["G"] == pytest.approx(112 * bar)
+    assert pos["H"] == pos["G"]
+
+
+def test_f_fallback_without_e():
+    """When E is omitted, F is the first HIGH after D (second HIGH overall)."""
+    from autohotcue.cuepolicy import _first_high_after, _resolve_high_low
+
+    segments = [
+        Segment(0, 32, "intro", 0.1),
+        Segment(32, 64, "verse", 0.4),
+        Segment(64, 128, "chorus", 0.95),
+        Segment(128, 224, "solo", 0.9),
+        Segment(224, 256, "outro", 0.2),
+    ]
+    high, _ = _resolve_high_low(segments)
+    d_idx = 2
+    f_idx = _first_high_after(segments, high, segments[d_idx].start)
+    assert f_idx == 3
+    found = sum(1 for i, _ in enumerate(segments) if i in high and i > d_idx)
+    assert found == 1
 
 
 def test_outro_guard_regression():

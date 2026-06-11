@@ -45,13 +45,16 @@ def test_slot_metrics_beat_and_bar_hits():
     assert m.mae == pytest.approx((0.0 + 0.5 + 2.5) / 3)
 
 
-def test_evaluate_proposal_skips_missing_slots():
+def test_evaluate_proposal_counts_missing_as_miss():
     truth = GroundTruthTrack(path="/x.opus", cues={"A": 1.0, "D": 50.0})
     prop = analysis.CueProposal(positions={"A": 1.0})
     result = EngineResult(engine="ml")
     evaluate_proposal(prop, truth, bpm=120.0, result=result)
     assert result.slots["A"].n == 1
-    assert "D" not in result.slots
+    assert result.slots["A"].hits_beat == 1
+    assert result.slots["D"].n == 1
+    assert result.slots["D"].hits_beat == 0
+    assert result.slots["D"].hits_bar == 0
 
 
 def test_yardstick_bpm_prefers_djay():

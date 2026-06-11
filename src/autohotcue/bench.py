@@ -31,6 +31,11 @@ class SlotMetrics:
         if err <= bar_s:
             self.hits_bar += 1
 
+    def record_miss(self, bar_s: float) -> None:
+        """Count a labeled slot with no predicted cue as a miss."""
+        self.n += 1
+        self.mae_sum += 4.0 * bar_s
+
     @property
     def mae(self) -> float:
         return self.mae_sum / self.n if self.n else 0.0
@@ -87,8 +92,24 @@ def evaluate_proposal(
     for letter, t_truth in truth.cues.items():
         t_pred = prop.positions.get(letter)
         if t_pred is None:
-            continue
-        result.slot(letter).record(t_pred, t_truth, beat_s, bar_s)
+            result.slot(letter).record_miss(bar_s)
+        else:
+            result.slot(letter).record(t_pred, t_truth, beat_s, bar_s)
+
+
+def run_bench_engine(
+    engine: str,
+    tracks: list[GroundTruthTrack],
+    bpm_by_path: dict[str, float | None],
+    cli_bpm: float | None,
+    jobs: int,
+) -> EngineResult:
+    """Picklable ProcessPool entry point; BPM map is built on the main thread."""
+
+    def bpm_lookup(path: str) -> float | None:
+        return bpm_by_path.get(path, cli_bpm)
+
+    return run_engine(tracks, engine, bpm_lookup, jobs=jobs)
 
 
 def run_engine(
@@ -179,12 +200,14 @@ def cmd_bench(args) -> None:
                 return bpm.value
         return args.bpm
 
+    bpm_by_path: dict[str, float | None] = {
+        gt.path: bpm_lookup(gt.path)
+        for gt in tracks
+        if Path(gt.path).is_file()
+    }
+
     if jobs > 1 and len(tracks) > 1:
         import concurrent.futures
-
-        def _run_one(engine: str) -> EngineResult:
-            init_worker(jobs)
-            return run_engine(tracks, engine, bpm_lookup, jobs=jobs)
 
         results: list[EngineResult] = []
         with concurrent.futures.ProcessPoolExecutor(
@@ -192,7 +215,17 @@ def cmd_bench(args) -> None:
             initializer=init_worker,
             initargs=(jobs,),
         ) as ex:
-            futs = {ex.submit(_run_one, eng): eng for eng in engines}
+            futs = {
+                ex.submit(
+                    run_bench_engine,
+                    eng,
+                    tracks,
+                    bpm_by_path,
+                    args.bpm,
+                    jobs,
+                ): eng
+                for eng in engines
+            }
             for fut in concurrent.futures.as_completed(futs):
                 results.append(fut.result())
         results.sort(key=lambda r: engines.index(r.engine))
