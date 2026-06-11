@@ -186,6 +186,50 @@ is corrected bookkeeping: the engine was never 80-260s/track on clean runs.
    impossible (it needs stereo at 44.1 kHz; its own `mlx_audio_io` load costs
    well under a second).
 
+## Follow-up: demucs batch_size and memory trims
+
+The remaining peak was demucs's live working set, and it has a quality-neutral
+knob upstream's default hides: `Separator(batch_size=8)` runs 8 split-chunks
+through the GPU at once. On M2 Max one chunk already saturates the GPU, so
+batching only multiplies live activation memory. Standalone separation, Kelsier,
+cap 3, fresh process each:
+
+| batch_size | separation | MLX peak | process footprint |
+|---|---|---|---|
+| 8 (upstream default) | 7.3s | 7.9 GB | 8.5 GB |
+| 4 | 6.7s | 4.5 GB | 6.8 GB |
+| 2 | 6.7s | 3.3 GB | 5.9 GB |
+| 1 | **6.3s** | **2.9 GB** | **5.1 GB** |
+
+Quality check: `shifts=1, seed=None` makes runs nondeterministic (a naive A/B
+showed 0.03-0.05 max diff — that's the random shift, not the batch size). With a
+fixed seed, batch 8 vs batch 1 stems differ by ≤ 7.5e-7 — float accumulation
+jitter, i.e. identical output.
+
+Applied (all measured equal-or-faster, no output change):
+
+1. `batch_size=1` default for the demucs Separator, override via
+   `AUTOHOTCUE_DEMUCS_BATCH` (larger GPUs may prefer 8).
+2. `torch.mps.empty_cache()` before separation — beat_this's torch/MPS allocator
+   was holding ~1 GB into the MLX-heavy phase (costs 9 ms).
+3. `del stems` after the spectrogram — ~0.5 GB of stem audio no longer pinned
+   through inference.
+
+End-to-end CLI after vs before this follow-up:
+
+| Track | wall before | wall after | peak footprint before | after |
+|---|---|---|---|---|
+| Kelsier (222s) | 14.8s | **13.3s** | ~10-13 GB | **~9 GB** |
+| Green & Blue (396s) | 23.6s | **21.4s** | ~17-21 GB | **~15 GB** |
+
+With separation tamed, the MLX memory peak now sits in the **allin1 inference
+forward pass** (NATTEN attention activations over the full-track spectrogram:
+5.8 GB MLX for 222s, 10.2 GB for 396s). Shrinking that means chunked/windowed
+inference — an upstream-model change with quality implications, not a
+configuration option; on top of the torch baseline (~3-4 GB) it sets the floor
+for current peaks. Skipping the discarded metrical DBN (proposed above) would
+cut time but not this peak, since the forward pass itself is the high-water mark.
+
 ## Measurement caveats
 
 - Background apps (Spotify, browser) were running but idle-ish; GPU was otherwise

@@ -47,8 +47,8 @@ uv run autohotcue bench truth.json --engines ml,ml-allin1,legacy
 
 | Track | audio | ml (librosa) | ml-allin1 |
 |-------|-------|-------------|-----------|
-| O'Flynn — Kelsier | 222s | 5.7s | 14.8s |
-| Maty Owl — Green & Blue (Extended) | 396s | 8.0s | 23.6s |
+| O'Flynn — Kelsier | 222s | 5.7s | 13.3s |
+| Maty Owl — Green & Blue (Extended) | 396s | 8.0s | 21.4s |
 
 Earlier figures of 57-260s/track were measured under GPU/memory contention and
 are wrong by 4-11x — see `docs/allin1-performance.md` for the clean per-phase
@@ -70,11 +70,17 @@ unchanged; only transient GPU buffer cache is reclaimed.
 The cap is load-bearing for speed, not just footprint: uncapped, the cache grows to
 ~29 GB on a 32 GB machine and memory pressure makes separation **5-6x slower**
 (measured: Kelsier demucs 7s capped vs 40-49s uncapped). 3 GB and 6 GB run at
-identical speed; 3 GB trims peak footprint a further 3-4 GB (Kelsier ~10 GB,
-Green & Blue 396s ~17 GB). The peak is the live working set of separation itself —
-inherent to the model, scales with track length — so expect double-digit-GB *bursts*
-during an `ml-allin1` analysis on a 32 GB machine, but no sustained occupancy between
-tracks or after the run. Full measurements: `docs/allin1-performance.md`.
+identical speed; below ~1 GB nothing further is gained and cap 0 costs ~30%.
+
+Separation also runs with demucs `batch_size=1` (override via
+`AUTOHOTCUE_DEMUCS_BATCH`): on M2 Max it is equal-or-faster than upstream's
+default 8 at ~2.7x lower MLX peak, with byte-equivalent stems (≤1e-6, seed-fixed).
+torch's MPS cache is flushed before separation and stems are dropped after the
+spectrogram. Measured peaks after all of this: Kelsier ~9 GB, Green & Blue (396s)
+~15 GB — now dominated by the all-in-one forward pass itself, not demucs. Expect
+double-digit-GB *bursts* during an `ml-allin1` analysis of long tracks on a 32 GB
+machine, but no sustained occupancy between tracks or after the run. Full
+measurements: `docs/allin1-performance.md`.
 
 ## Rejected paths (errors)
 

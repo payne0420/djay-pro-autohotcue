@@ -146,8 +146,23 @@ def _get_separator():
             raise _import_error(exc) from exc
         _ensure_mlx_env()
         _configure_mlx_cache()
-        _separator = Separator(model="htdemucs", progress=False)
+        # batch_size 1: on M2 Max one chunk already saturates the GPU — measured
+        # equal-or-faster than upstream's default 8 at ~2.7x lower MLX peak
+        # (docs/allin1-performance.md); larger GPUs may prefer 8.
+        batch = int(os.environ.get("AUTOHOTCUE_DEMUCS_BATCH", "1"))
+        _separator = Separator(model="htdemucs", progress=False, batch_size=batch)
     return _separator
+
+
+def _release_torch_mps_cache() -> None:
+    """Free torch's cached MPS buffers (beat_this leftovers) before MLX-heavy work."""
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return
+    try:
+        torch.mps.empty_cache()
+    except (AttributeError, RuntimeError):
+        pass
 
 
 def _get_model(weights_dir: Path):
@@ -240,6 +255,7 @@ def segment_structure_allin1(
             f"demucs samplerate ({sep_sr}) != all-in-one model sample_rate "
             f"({model_sr}); segment timestamps would be mis-scaled"
         )
+    _release_torch_mps_cache()
     try:
         _, stems = separator.separate_audio_file(path, return_mx=True)
         spec = spectrogram_from_stems(
@@ -248,6 +264,7 @@ def segment_structure_allin1(
             backend="mlx_fast",
             return_mx=True,
         )
+        del stems  # ~0.5 GB of MLX stem audio; inference is the memory peak
         result = run_inference_mlx_spec(
             path=Path(path),
             spec=spec,

@@ -176,6 +176,50 @@ def test_allin1_forward_wrapper():
     assert w.state == {"w": 1}
 
 
+def test_get_separator_batch_size_default_and_override(monkeypatch):
+    import autohotcue._allin1 as mod
+
+    inits: list[dict] = []
+
+    class FakeSeparator:
+        def __init__(self, **kwargs):
+            inits.append(kwargs)
+
+    fake_api = types.ModuleType("demucs_mlx.api")
+    fake_api.Separator = FakeSeparator
+    fake_pkg = types.ModuleType("demucs_mlx")
+    fake_pkg.api = fake_api
+    monkeypatch.setitem(sys.modules, "demucs_mlx", fake_pkg)
+    monkeypatch.setitem(sys.modules, "demucs_mlx.api", fake_api)
+    monkeypatch.setattr(mod, "_check_platform", lambda: None)
+    monkeypatch.setattr(mod, "_ensure_mlx_env", lambda: None)
+    monkeypatch.setattr(mod, "_configure_mlx_cache", lambda: None)
+
+    monkeypatch.delenv("AUTOHOTCUE_DEMUCS_BATCH", raising=False)
+    monkeypatch.setattr(mod, "_separator", None)
+    mod._get_separator()
+    assert inits[-1] == {"model": "htdemucs", "progress": False, "batch_size": 1}
+
+    monkeypatch.setenv("AUTOHOTCUE_DEMUCS_BATCH", "8")
+    monkeypatch.setattr(mod, "_separator", None)
+    mod._get_separator()
+    assert inits[-1]["batch_size"] == 8
+
+
+def test_release_torch_mps_cache_without_torch(monkeypatch):
+    import autohotcue._allin1 as mod
+
+    monkeypatch.setitem(sys.modules, "torch", None)
+    mod._release_torch_mps_cache()  # torch absent: must be a no-op
+
+    calls: list[bool] = []
+    fake_torch = types.ModuleType("torch")
+    fake_torch.mps = SimpleNamespace(empty_cache=lambda: calls.append(True))
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    mod._release_torch_mps_cache()
+    assert calls == [True]
+
+
 def test_configure_mlx_cache_default_and_override(monkeypatch):
     import autohotcue._allin1 as mod
 
