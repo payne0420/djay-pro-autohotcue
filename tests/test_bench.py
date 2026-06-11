@@ -55,10 +55,12 @@ def test_evaluate_proposal_counts_missing_as_miss():
     assert result.slots["A"].hits_beat == 1
     assert result.slots["A"].mae == pytest.approx(0.0)
     assert result.slots["D"].n == 1
+    assert result.slots["D"].omitted == 1
     assert result.slots["D"].hits_beat == 0
     assert result.slots["D"].hits_bar == 0
     assert result.slots["D"].mae_n == 0
     assert result.slots["D"].mae == 0.0
+    assert result.slots["A"].omitted == 0
 
 
 def test_record_miss_does_not_inflate_mae():
@@ -66,6 +68,7 @@ def test_record_miss_does_not_inflate_mae():
     bar_s = 4.0 * (60.0 / 120.0)
     m.record_miss()
     assert m.n == 1
+    assert m.omitted == 1
     assert m.mae_n == 0
     assert m.mae == 0.0
     m.record(10.0, 11.0, 60.0 / 120.0, bar_s)

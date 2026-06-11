@@ -20,6 +20,7 @@ class GroundTruthTrack:
 @dataclass
 class SlotMetrics:
     n: int = 0
+    omitted: int = 0
     hits_beat: int = 0
     hits_bar: int = 0
     mae_sum: float = 0.0
@@ -38,6 +39,7 @@ class SlotMetrics:
     def record_miss(self) -> None:
         """Count a labeled slot with no predicted cue as a miss (no MAE entry)."""
         self.n += 1
+        self.omitted += 1
 
     @property
     def mae(self) -> float:
@@ -184,6 +186,7 @@ def _merge_track_result(result: EngineResult, track_result: TrackBenchResult) ->
     for letter, metrics in track_result.slots.items():
         slot = result.slot(letter)
         slot.n += metrics.n
+        slot.omitted += metrics.omitted
         slot.hits_beat += metrics.hits_beat
         slot.hits_bar += metrics.hits_bar
         slot.mae_sum += metrics.mae_sum
@@ -242,7 +245,10 @@ def run_engine(
 def format_results(results: list[EngineResult]) -> str:
     letters = sorted({l for r in results for l in r.slots})
     lines: list[str] = []
-    hdr = f"{'slot':>4}  {'engine':>6}  {'n':>3}  {'±1 beat':>8}  {'±1 bar':>8}  {'MAE':>8}"
+    hdr = (
+        f"{'slot':>4}  {'engine':>6}  {'n':>3}  {'omitted':>7}  "
+        f"{'±1 beat':>8}  {'±1 bar':>8}  {'MAE':>8}"
+    )
     lines.append(hdr)
     lines.append("-" * len(hdr))
     for letter in letters:
@@ -251,7 +257,7 @@ def format_results(results: list[EngineResult]) -> str:
             if m is None or m.n == 0:
                 continue
             lines.append(
-                f"{letter:>4}  {res.engine:>6}  {m.n:3d}  "
+                f"{letter:>4}  {res.engine:>6}  {m.n:3d}  {m.omitted:7d}  "
                 f"{m.hit_rate_beat:8.1%}  {m.hit_rate_bar:8.1%}  {m.mae:8.3f}s"
             )
     lines.append("")

@@ -205,21 +205,23 @@ def test_violation_omits_not_clamps():
 
     violating_c = 20.0
     d_at = 20.0
-    p = CueProposal(
-        positions={
-            "A": 0.0,
-            "B": 10.0,
-            "C": violating_c,
-            "D": d_at,
-            "E": 30.0,
-            "F": 40.0,
-            "G": 50.0,
-            "H": 50.0,
-        }
-    )
+    before = {
+        "A": 0.0,
+        "B": 10.0,
+        "C": violating_c,
+        "D": d_at,
+        "E": 30.0,
+        "F": 40.0,
+        "G": 50.0,
+        "H": 50.0,
+    }
+    p = CueProposal(positions=dict(before))
     _check_monotonicity(p)
     assert "C" not in p.positions
-    assert p.positions["D"] == d_at
+    for letter, t in before.items():
+        if letter == "C":
+            continue
+        assert p.positions[letter] == t
     assert any("C" in n and "monotonicity" in n for n in p.notes)
 
 

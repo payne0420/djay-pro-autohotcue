@@ -179,6 +179,8 @@ def _precheck_one(db: djaydb.DjayDB, path: str, args):
         raise _Skip("track not found in djay library — import it into djay first "
                     "(add to My Collection)")
 
+    # Read the existing record (if any) as raw bytes so we can guarantee we can
+    # reproduce it byte-for-byte before mutating it — never corrupt other fields.
     raw = db.get_raw("mediaItemUserData", key)
     existing = None
     if raw is not None:
@@ -212,6 +214,8 @@ def _write_one(db: djaydb.DjayDB, key: str, existing, prop, ensure_backup) -> in
     if not cues:
         raise _Skip("analysis produced no cues")
 
+    # Re-check right before touching the DB: djay must not have started during
+    # the (possibly slow) audio analysis.
     if _djay_running():
         raise SystemExit("djay Pro started during analysis — aborting before any write")
 
@@ -282,6 +286,8 @@ def _apply_parallel(db, paths, args, ensure_backup, jobs):
                     print(f"  wrote {n} cues")
                     written += 1
         finally:
+            # On abort (djay started, Ctrl-C) drop queued analyses immediately;
+            # nothing else gets written either way.
             ex.shutdown(wait=False, cancel_futures=True)
     return written, skipped, failed
 
@@ -298,6 +304,8 @@ def cmd_apply(args):
     backed_up = False
 
     def ensure_backup():
+        # One backup per run, taken just before the first write, so a run where
+        # every track is skipped leaves no backup behind.
         nonlocal backed_up
         if not backed_up:
             print("backup:", db.backup(backup_dir))
@@ -345,7 +353,7 @@ def cmd_apply(args):
             try:
                 db.checkpoint()
             except sqlite3.OperationalError:
-                pass
+                pass  # djay may have started and grabbed the DB; writes are committed
         db.close()
 
 
