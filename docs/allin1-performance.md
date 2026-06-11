@@ -96,10 +96,20 @@ Kelsier, two analyses per process, peak phys_footprint via `footprint`:
 
 | `AUTOHOTCUE_MLX_CACHE_GB` | demucs (run1/run2) | process total | peak footprint |
 |---|---|---|---|
+| 0 (cache disabled) | **9.2s / 9.3s** | **27.1s** | ~12 GB |
+| 0.5 | 7.7s / 7.8s | 24.2s | ~14 GB |
+| 1 | 7.5s / 7.2s | 23.3s | ~13 GB |
+| 2 | 7.6s / 7.0s | 23.5s | ~14 GB |
 | 3 | 7.2s / 7.1s | 23.5s | ~10 GB |
 | 6 (old default) | 7.3s / 8.1s | 24.7s | ~13 GB |
 | 12 | 7.6s / 9.9s | 27.6s | ~24 GB |
 | uncapped (999) | **48.7s / 40.1s** | **108.3s** | ~29 GB |
+
+Runtime is flat from 3 GB down to ~1 GB; 0.5 GB hints at degradation (within
+noise) and fully disabling the cache costs ~30% on separation (allocation churn).
+Caps below 3 GB do not lower peak footprint either — the peak is demucs's live
+working set, not the cache — so 3 GB sits on the speed plateau at the point of
+diminishing memory returns.
 
 Uncapped, MLX retains every freed Metal buffer; the footprint climbs to ~29 GB on
 a 32 GB machine, the OS hits memory pressure, and separation runs 5-6x slower
