@@ -70,6 +70,11 @@ uv run autohotcue apply "/path/to/track.opus"
 
 # Read back what djay has stored for a track
 uv run autohotcue verify "/path/to/track.opus"
+
+# Point propose/apply/verify at a folder to process every audio file in it
+# (recursive). A folder apply takes ONE backup for the whole run and skips
+# problem tracks (not in djay, already has cues, ...) with a summary.
+uv run autohotcue apply "/path/to/Afro House/"
 ```
 
 The track must already be in djay's **My Collection** (so the library has a
@@ -87,9 +92,10 @@ pass `--bpm` to override.
 - **Faithful-edit guard** — before modifying an existing record, the original
   blob must re-serialize byte-for-byte; if autohotcue can't reproduce it
   exactly it refuses, so it can never corrupt the record's other fields.
-- **Unique, consistent backups** — each `apply` checkpoints the WAL and copies
-  `MediaLibrary.db` (+ `-wal`/`-shm`) into a uniquely-named, timestamped dir
-  under `~/Music/djay/Backups/autohotcue/` (never overwriting an earlier one).
+- **Unique, consistent backups** — each `apply` run checkpoints the WAL and
+  copies `MediaLibrary.db` (+ `-wal`/`-shm`) into a uniquely-named, timestamped
+  dir under `~/Music/djay/Backups/autohotcue/` (never overwriting an earlier
+  one) before its first write; a folder run takes one backup for the batch.
 - **Overwrite protection** — tracks with existing cues need `--force`.
 - **Self-checking writes** — every serialized blob is re-parsed and
   re-serialized and must match before it touches the database.

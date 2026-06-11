@@ -50,6 +50,10 @@ uv run autohotcue apply "/path/to/track.opus"       # WRITE cues into djay's DB
 `apply` reuses djay's analyzed BPM automatically; override with `--bpm`.
 Use `--library <path>` to target a copy of the DB (do this when testing writes).
 
+`propose`, `apply` and `verify` also accept a **folder** (scanned recursively
+for audio files). A folder `apply` takes one backup for the whole run and
+reports per-track skips/failures plus a summary instead of aborting.
+
 ## Testing instructions
 
 - Run everything: `uv run pytest` (config pins `testpaths = ["tests"]`).
@@ -76,8 +80,8 @@ writing to the live database safe. If you touch `tsaf.py`:
 Other write-path rules already enforced — keep them:
 - **djay must be quit** before `apply` (it holds the DB open); it is re-checked
   immediately before the write.
-- Every `apply` takes a **unique, timestamped backup** of the DB (+ `-wal`/`-shm`)
-  before writing.
+- Every `apply` run takes a **unique, timestamped backup** of the DB
+  (+ `-wal`/`-shm`) before its first write (one backup per folder batch).
 - Track lookup matches the **exact** `file://` source URL and refuses ambiguous
   matches — never write cues to the wrong track.
 
