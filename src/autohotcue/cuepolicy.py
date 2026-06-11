@@ -279,7 +279,7 @@ def propose_cues(
         prev_idx = _segment_before(segments, d_idx)
         if prev_idx is not None:
             c_t = _snap(beat, segments[prev_idx].start)
-            if b <= c_t < d_t:
+            if b < c_t < d_t:
                 p.positions["C"] = c_t
             else:
                 p.notes.append("C (Buildup): omitted (nothing between B and D)")

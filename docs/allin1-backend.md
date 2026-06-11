@@ -55,6 +55,17 @@ uv run autohotcue bench truth.json --engines ml,ml-allin1,legacy
 ml-allin1 cost is dominated by demucs-mlx separation + harmonix-fold0 inference; beat_this
 is unchanged. Subsequent tracks in one process reuse loaded demucs/model singletons.
 
+## Memory
+
+On Apple Silicon, MLX retains freed Metal buffers in an in-process cache by design (reuse
+across allocations). In a long folder run this can look like a leak: `phys_footprint` climbed
+to ~25 GB (all `IOAccelerator`) while Python `malloc` stayed ~216 MB.
+
+autohotcue caps that cache at backend init via `mlx.core.set_cache_limit` (default **6 GB**,
+override with `AUTOHOTCUE_MLX_CACHE_GB`) and calls `mlx.core.clear_cache()` after each
+`segment_structure_allin1` so memory returns between tracks. Loaded demucs/model weights are
+unchanged; only transient GPU buffer cache is reclaimed.
+
 ## Rejected paths (errors)
 
 1. **mlx-audio-io 1.3.9** (all-in-one-mlx default): `TypeError: Unable to convert function return value to a Python type!` in `mlx_audio_io.load()` on Python 3.13 — fixed in 1.3.10.

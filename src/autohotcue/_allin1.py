@@ -22,6 +22,7 @@ _MODEL_NAME = "harmonix-fold0"
 _separator = None
 _model = None
 _weights_dir: Path | None = None
+_mlx_cache_configured = False
 
 
 class _AllInOneForwardWrapper:
@@ -104,6 +105,18 @@ def _ensure_mlx_env() -> None:
     os.environ.setdefault("NATTEN_MLX_COMPILE", "1")
 
 
+def _configure_mlx_cache() -> None:
+    """Cap MLX Metal buffer cache (default 6 GB; override via AUTOHOTCUE_MLX_CACHE_GB)."""
+    global _mlx_cache_configured
+    if _mlx_cache_configured:
+        return
+    import mlx.core as mx
+
+    gb = float(os.environ.get("AUTOHOTCUE_MLX_CACHE_GB", "6"))
+    mx.set_cache_limit(int(gb * (1024**3)))
+    _mlx_cache_configured = True
+
+
 def _check_platform() -> None:
     if sys.platform != "darwin":
         raise _import_error()
@@ -122,6 +135,7 @@ def _get_separator():
         except ImportError as exc:
             raise _import_error(exc) from exc
         _ensure_mlx_env()
+        _configure_mlx_cache()
         _separator = Separator(model="htdemucs", progress=False)
     return _separator
 
@@ -155,7 +169,8 @@ def _energy_ranks_for_segments(
     for seg in segments:
         i0 = int(seg.start * sr / HOP)
         i1 = max(i0 + 1, int(seg.end * sr / HOP))
-        energies.append(float(low[i0:i1].mean()) if i1 <= len(low) else 0.0)
+        slice_ = low[i0 : min(i1, len(low))]
+        energies.append(float(slice_.mean()) if len(slice_) > 0 else 0.0)
     from scipy.stats import rankdata
 
     ranks = (rankdata(energies, method="average") - 1) / max(1, len(energies) - 1)
@@ -205,6 +220,7 @@ def segment_structure_allin1(
         raise _import_error(exc) from exc
 
     _ensure_mlx_env()
+    _configure_mlx_cache()
     separator = _get_separator()
     model = _get_model(weights_dir)
     sep_sr = separator.samplerate
@@ -214,21 +230,26 @@ def segment_structure_allin1(
             f"demucs samplerate ({sep_sr}) != all-in-one model sample_rate "
             f"({model_sr}); segment timestamps would be mis-scaled"
         )
-    _, stems = separator.separate_audio_file(path, return_mx=True)
-    spec = spectrogram_from_stems(
-        stems,
-        sample_rate=sep_sr,
-        backend="mlx_fast",
-        return_mx=True,
-    )
-    result = run_inference_mlx_spec(
-        path=Path(path),
-        spec=spec,
-        model=model,
-        include_activations=False,
-        include_embeddings=False,
-        compile_forward=False,
-    )
-    segments = _map_allin1_segments(result, beat.duration_s)
-    segments = _energy_ranks_for_segments(y, sr, segments)
-    return StructureAnalysis(segments=segments, source="allin1")
+    try:
+        _, stems = separator.separate_audio_file(path, return_mx=True)
+        spec = spectrogram_from_stems(
+            stems,
+            sample_rate=sep_sr,
+            backend="mlx_fast",
+            return_mx=True,
+        )
+        result = run_inference_mlx_spec(
+            path=Path(path),
+            spec=spec,
+            model=model,
+            include_activations=False,
+            include_embeddings=False,
+            compile_forward=False,
+        )
+        segments = _map_allin1_segments(result, beat.duration_s)
+        segments = _energy_ranks_for_segments(y, sr, segments)
+        return StructureAnalysis(segments=segments, source="allin1")
+    finally:
+        import mlx.core as mx
+
+        mx.clear_cache()

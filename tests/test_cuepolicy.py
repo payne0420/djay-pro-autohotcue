@@ -55,18 +55,19 @@ def test_canonical_edm_all_eight_on_downbeats():
     ])
     p = propose_cues(beat, structure)
 
-    for letter in "ABCDEFGH":
+    for letter in "ABDEFGH":
         assert letter in p.positions, f"missing cue {letter}: {p.notes}"
+    assert "C" not in p.positions
+    assert any("C (Buildup)" in n and "omitted" in n for n in p.notes)
 
     downbeat_set = set(beat.downbeats.tolist())
     for letter, t in p.positions.items():
         assert t in downbeat_set, f"{letter}={t} not on a downbeat"
 
     pos = p.positions
-    assert pos["A"] <= pos["B"] <= pos["C"] < pos["D"] < pos["E"] < pos["F"] <= pos["G"] == pos["H"]
+    assert pos["A"] <= pos["B"] < pos["D"] < pos["E"] < pos["F"] <= pos["G"] == pos["H"]
     assert pos["A"] == pytest.approx(0.0)
     assert pos["B"] == pytest.approx(16 * bar)
-    assert pos["C"] == pytest.approx(16 * bar)
     assert pos["D"] == pytest.approx(32 * bar)
     assert pos["E"] == pytest.approx(64 * bar)
     assert pos["F"] == pytest.approx(80 * bar)
@@ -192,8 +193,9 @@ def test_three_four_meter():
         ("outro", 80 * bar, 96 * bar, 0.15),
     ])
     p = propose_cues(beat, structure)
-    for letter in "ABCDEFGH":
+    for letter in "ABDEFGH":
         assert letter in p.positions
+    assert "C" not in p.positions
     downbeat_set = set(beat.downbeats.tolist())
     for t in p.positions.values():
         assert t in downbeat_set
@@ -235,6 +237,25 @@ def test_short_track_ab_only():
     p = propose_cues(beat, structure)
     assert set(p.positions.keys()) == {"A", "B"}
     assert any("too short" in n for n in p.notes)
+
+
+def test_buildup_omitted_when_snapped_start_equals_b():
+    """C omitted when segment before D snaps to B (e.g. Move Extended Mix ml-allin1)."""
+    beat = mk_beat(120.0, 128, meter=4)
+    bar = beat.bar_s()
+    structure = mk_segs([
+        ("intro", 0, 16 * bar, 0.1),
+        ("verse", 16 * bar, 32 * bar, 0.4),
+        ("chorus", 32 * bar, 64 * bar, 0.95),
+        ("break", 64 * bar, 80 * bar, 0.15),
+        ("chorus", 80 * bar, 112 * bar, 0.9),
+        ("outro", 112 * bar, 128 * bar, 0.2),
+    ])
+    p = propose_cues(beat, structure)
+    assert "C" not in p.positions
+    assert any("C (Buildup)" in n and "omitted" in n for n in p.notes)
+    assert p.positions["B"] == pytest.approx(16 * bar)
+    assert p.positions["D"] == pytest.approx(32 * bar)
 
 
 def test_djay_bpm_crosscheck_note():

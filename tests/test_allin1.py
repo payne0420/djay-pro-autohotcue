@@ -137,6 +137,31 @@ def test_energy_ranks_per_track():
     assert ranked[0].label == "intro"
 
 
+def test_energy_ranks_partial_tail_slice(monkeypatch):
+    """Segment end past low-band length uses clamped partial slice, not 0.0."""
+    from autohotcue.analysis import HOP
+
+    sr = 44100
+    n_frames = 10
+    low = np.linspace(0.1, 1.0, n_frames, dtype=np.float64)
+    monkeypatch.setattr(
+        "autohotcue._allin1.band_energy",
+        lambda _y, _sr, _hop: (low, None, None, None),
+    )
+    segs = [
+        Segment(0.0, 0.05, "intro"),
+        Segment(0.1, 5.0, "outro"),
+    ]
+    ranked = _energy_ranks_for_segments(np.zeros(sr), sr, segs)
+    assert len(ranked) == 2
+    i0 = int(0.1 * sr / HOP)
+    i1 = max(i0 + 1, int(5.0 * sr / HOP))
+    tail_mean = float(low[i0 : min(i1, len(low))].mean())
+    assert tail_mean == pytest.approx(0.95)
+    assert ranked[1].energy_rank > ranked[0].energy_rank
+    assert ranked[1].energy_rank == pytest.approx(1.0)
+
+
 def test_allin1_forward_wrapper():
     class _M:
         cfg = object()

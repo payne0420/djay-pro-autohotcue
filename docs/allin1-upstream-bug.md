@@ -48,7 +48,7 @@ from mlx_audio_io import load
 load("test.wav", mono=True, dtype="float32")
 ```
 
-Expected: `(mlx.core.array, int)`  
+Expected: `(mlx.core.array, int)`
 Actual: `TypeError: Unable to convert function return value to a Python type!`
 
 Workaround: upgrade to 1.3.10+.
