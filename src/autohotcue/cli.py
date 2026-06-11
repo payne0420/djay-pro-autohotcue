@@ -13,10 +13,14 @@ Commands:
 PATH for propose/apply/verify may be a single audio file or a directory,
 which is scanned recursively. A directory `apply` takes one backup for the
 whole run and reports per-track skips/failures instead of aborting on them.
+`--jobs N` analyzes N tracks in parallel (worker processes); the database is
+only ever touched from the main thread, so all write-path guards still hold.
 """
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import os
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -51,6 +55,10 @@ def _expand_paths(path: str) -> list[str]:
     return files
 
 
+def _resolve_jobs(n: int) -> int:
+    return (os.cpu_count() or 1) if n == 0 else max(1, n)
+
+
 def _bpm_for(db: djaydb.DjayDB, key: str, fallback: float | None) -> float:
     """Pull djay's analyzed BPM for the track if present."""
     from autohotcue import tsaf
@@ -70,29 +78,47 @@ def _djay_running() -> bool:
     return out.returncode == 0
 
 
+def _print_proposal(grid, prop):
+    print(f"grid: {grid.bpm:.1f} BPM, anchor {grid.first_beat_s:.3f}s, {grid.duration_s:.1f}s")
+    for pad in "ABCDEFGH":
+        t = prop.positions.get(pad)
+        if t is not None:
+            m, s = divmod(t, 60)
+            print(f"  {pad} {djaydb.CUE_LABELS[ord(pad)-65]:16s} {int(m)}:{s:05.2f} ({t:.3f}s)")
+    for note in prop.notes:
+        print("  -", note)
+
+
 def cmd_propose(args):
     paths = _expand_paths(args.path)
     batch = Path(args.path).is_dir()
+    jobs = _resolve_jobs(args.jobs)
     failed = 0
-    for path in paths:
-        if batch:
-            print(f"\n{Path(path).name}")
-        try:
-            grid, prop = analysis.propose_cues(path, known_bpm=args.bpm or 120.0)
-        except Exception as e:
-            if not batch:
-                raise
-            print(f"  FAILED: {e}")
-            failed += 1
-            continue
-        print(f"grid: {grid.bpm:.1f} BPM, anchor {grid.first_beat_s:.3f}s, {grid.duration_s:.1f}s")
-        for pad in "ABCDEFGH":
-            t = prop.positions.get(pad)
-            if t is not None:
-                m, s = divmod(t, 60)
-                print(f"  {pad} {djaydb.CUE_LABELS[ord(pad)-65]:16s} {int(m)}:{s:05.2f} ({t:.3f}s)")
-        for note in prop.notes:
-            print("  -", note)
+    if batch and jobs > 1 and len(paths) > 1:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as ex:
+            futs = {ex.submit(analysis.propose_cues, p, args.bpm or 120.0): p for p in paths}
+            for fut in concurrent.futures.as_completed(futs):
+                print(f"\n{Path(futs[fut]).name}")
+                try:
+                    grid, prop = fut.result()
+                except Exception as e:
+                    print(f"  FAILED: {e}")
+                    failed += 1
+                    continue
+                _print_proposal(grid, prop)
+    else:
+        for path in paths:
+            if batch:
+                print(f"\n{Path(path).name}", flush=True)
+            try:
+                grid, prop = analysis.propose_cues(path, known_bpm=args.bpm or 120.0)
+            except Exception as e:
+                if not batch:
+                    raise
+                print(f"  FAILED: {e}")
+                failed += 1
+                continue
+            _print_proposal(grid, prop)
     if batch:
         print(f"\n{len(paths) - failed} analyzed, {failed} failed ({len(paths)} files)")
 
@@ -105,12 +131,9 @@ def cmd_viz(args):
     print("wrote", args.out)
 
 
-def _apply_one(db: djaydb.DjayDB, path: str, args, ensure_backup) -> int:
-    """Analyze one track and write its cues; returns the number of cues written.
-
-    Raises _Skip for per-track conditions; SystemExit only for whole-run
-    conditions (djay started while we were analyzing).
-    """
+def _precheck_one(db: djaydb.DjayDB, path: str, args):
+    """Cheap DB-side checks before the (slow) analysis: locate the track and
+    make sure its record is safe to edit. Returns (key, existing_doc, bpm)."""
     from autohotcue import tsaf
 
     try:
@@ -140,8 +163,14 @@ def _apply_one(db: djaydb.DjayDB, path: str, args, ensure_backup) -> int:
                 "fields. Please report this track."
             )
 
-    bpm = _bpm_for(db, key, args.bpm)
-    grid, prop = analysis.propose_cues(path, known_bpm=bpm)
+    return key, existing, _bpm_for(db, key, args.bpm)
+
+
+def _write_one(db: djaydb.DjayDB, key: str, existing, prop, ensure_backup) -> int:
+    """Build the cue record from an analysis result and write it. Main thread
+    only — this is the sole place apply touches the database after pre-checks."""
+    from autohotcue import tsaf
+
     cues = []
     for i, pad in enumerate("ABCDEFGH"):
         t = prop.positions.get(pad)
@@ -151,7 +180,7 @@ def _apply_one(db: djaydb.DjayDB, path: str, args, ensure_backup) -> int:
         raise _Skip("analysis produced no cues")
 
     # Re-check right before touching the DB: djay must not have started during
-    # the (possibly slow) audio analysis above.
+    # the (possibly slow) audio analysis.
     if _djay_running():
         raise SystemExit("djay Pro started during analysis — aborting before any write")
 
@@ -171,11 +200,56 @@ def _apply_one(db: djaydb.DjayDB, path: str, args, ensure_backup) -> int:
     return len(cues)
 
 
+def _apply_parallel(db, paths, args, ensure_backup, jobs):
+    """Pre-check every track first (main thread), fan the analyses out to
+    worker processes, then write each result back on the main thread as it
+    completes. Worker processes never see the database."""
+    total = len(paths)
+    written = skipped = failed = 0
+    todo = []
+    for i, path in enumerate(paths, 1):
+        try:
+            key, existing, bpm = _precheck_one(db, path, args)
+        except _Skip as e:
+            print(f"[{i}/{total}] {Path(path).name}\n  skip: {e}")
+            skipped += 1
+            continue
+        todo.append((i, path, key, existing, bpm))
+
+    if todo:
+        print(f"analyzing {len(todo)} tracks with {jobs} workers", flush=True)
+        ex = concurrent.futures.ProcessPoolExecutor(max_workers=jobs)
+        try:
+            futs = {ex.submit(analysis.propose_cues, path, bpm): (i, path, key, existing)
+                    for i, path, key, existing, bpm in todo}
+            for fut in concurrent.futures.as_completed(futs):
+                i, path, key, existing = futs[fut]
+                print(f"[{i}/{total}] {Path(path).name}", flush=True)
+                try:
+                    grid, prop = fut.result()
+                    n = _write_one(db, key, existing, prop, ensure_backup)
+                except _Skip as e:
+                    print(f"  skip: {e}")
+                    skipped += 1
+                except Exception as e:
+                    print(f"  FAILED: {e}")
+                    failed += 1
+                else:
+                    print(f"  wrote {n} cues")
+                    written += 1
+        finally:
+            # On abort (djay started, Ctrl-C) drop queued analyses immediately;
+            # nothing else gets written either way.
+            ex.shutdown(wait=False, cancel_futures=True)
+    return written, skipped, failed
+
+
 def cmd_apply(args):
     if _djay_running():
         raise SystemExit("djay Pro is running — quit it first (it must not hold the DB open)")
     paths = _expand_paths(args.path)
     batch = Path(args.path).is_dir()
+    jobs = _resolve_jobs(args.jobs)
     db = djaydb.DjayDB(args.library) if args.library else djaydb.DjayDB()
 
     backup_dir = args.backup_dir or (Path.home() / "Music/djay/Backups/autohotcue")
@@ -189,30 +263,36 @@ def cmd_apply(args):
             print("backup:", db.backup(backup_dir))
             backed_up = True
 
+    total = len(paths)
     written = skipped = failed = 0
     try:
-        for i, path in enumerate(paths, 1):
-            name = Path(path).name
-            if batch:
-                print(f"[{i}/{len(paths)}] {name}", flush=True)
-            try:
-                n = _apply_one(db, path, args, ensure_backup)
-            except _Skip as e:
-                if not batch:
-                    raise SystemExit(str(e)) from None
-                print(f"  skip: {e}")
-                skipped += 1
-                continue
-            except Exception as e:
-                if not batch:
-                    raise
-                print(f"  FAILED: {e}")
-                failed += 1
-                continue
-            print(f"  wrote {n} cues" if batch else f"wrote {n} cues to {name}")
-            written += 1
+        if batch and jobs > 1 and total > 1:
+            written, skipped, failed = _apply_parallel(db, paths, args, ensure_backup, jobs)
+        else:
+            for i, path in enumerate(paths, 1):
+                name = Path(path).name
+                if batch:
+                    print(f"[{i}/{total}] {name}", flush=True)
+                try:
+                    key, existing, bpm = _precheck_one(db, path, args)
+                    grid, prop = analysis.propose_cues(path, known_bpm=bpm)
+                    n = _write_one(db, key, existing, prop, ensure_backup)
+                except _Skip as e:
+                    if not batch:
+                        raise SystemExit(str(e)) from None
+                    print(f"  skip: {e}")
+                    skipped += 1
+                    continue
+                except Exception as e:
+                    if not batch:
+                        raise
+                    print(f"  FAILED: {e}")
+                    failed += 1
+                    continue
+                print(f"  wrote {n} cues" if batch else f"wrote {n} cues to {name}")
+                written += 1
         if batch:
-            print(f"\n{written} written, {skipped} skipped, {failed} failed ({len(paths)} files)")
+            print(f"\n{written} written, {skipped} skipped, {failed} failed ({total} files)")
     finally:
         if backed_up:
             try:
@@ -257,12 +337,18 @@ def cmd_verify(args):
 def main(argv=None):
     p = argparse.ArgumentParser(prog="autohotcue", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
+    jobs_help = "parallel analysis workers for a folder (0 = one per CPU core)"
 
-    for name in ("propose", "verify"):
-        sp = sub.add_parser(name)
-        sp.add_argument("path", help="audio file, or directory to scan recursively")
-        sp.add_argument("--bpm", type=float, default=None)
-        sp.add_argument("--library", default=None)
+    sp = sub.add_parser("propose")
+    sp.add_argument("path", help="audio file, or directory to scan recursively")
+    sp.add_argument("--bpm", type=float, default=None)
+    sp.add_argument("--library", default=None)
+    sp.add_argument("-j", "--jobs", type=int, default=1, help=jobs_help)
+
+    sp = sub.add_parser("verify")
+    sp.add_argument("path", help="audio file, or directory to scan recursively")
+    sp.add_argument("--bpm", type=float, default=None)
+    sp.add_argument("--library", default=None)
 
     sp = sub.add_parser("viz")
     sp.add_argument("path", help="audio file")
@@ -275,6 +361,7 @@ def main(argv=None):
     sp.add_argument("--library", default=None)
     sp.add_argument("--backup-dir", default=None)
     sp.add_argument("--force", action="store_true")
+    sp.add_argument("-j", "--jobs", type=int, default=1, help=jobs_help)
 
     args = p.parse_args(argv)
     {"propose": cmd_propose, "viz": cmd_viz, "apply": cmd_apply, "verify": cmd_verify}[args.cmd](args)

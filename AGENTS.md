@@ -53,6 +53,9 @@ Use `--library <path>` to target a copy of the DB (do this when testing writes).
 `propose`, `apply` and `verify` also accept a **folder** (scanned recursively
 for audio files). A folder `apply` takes one backup for the whole run and
 reports per-track skips/failures plus a summary instead of aborting.
+`-j/--jobs N` fans the audio analysis out to N worker processes (0 = one per
+core); the database is only ever touched from the main thread — keep it that
+way if you change the parallel path.
 
 ## Testing instructions
 

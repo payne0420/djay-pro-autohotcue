@@ -74,7 +74,9 @@ uv run autohotcue verify "/path/to/track.opus"
 # Point propose/apply/verify at a folder to process every audio file in it
 # (recursive). A folder apply takes ONE backup for the whole run and skips
 # problem tracks (not in djay, already has cues, ...) with a summary.
-uv run autohotcue apply "/path/to/Afro House/"
+# -j N analyzes N tracks in parallel (-j 0 = one worker per CPU core);
+# database writes always stay serialized on the main thread.
+uv run autohotcue apply "/path/to/Afro House/" -j 4
 ```
 
 The track must already be in djay's **My Collection** (so the library has a
