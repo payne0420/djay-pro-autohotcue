@@ -304,8 +304,9 @@ def test_segment_structure_allin1_plumbing(monkeypatch, tmp_path):
 
     inf_calls: dict[str, object] = {}
 
-    def fake_run_inference_mlx_spec(**kwargs):
-        inf_calls.update(kwargs)
+    def fake_functional_result(spec, model_arg):
+        inf_calls["spec"] = spec
+        inf_calls["model"] = model_arg
         return SimpleNamespace(
             segments=[
                 SimpleNamespace(start=0.0, end=16.0, label="start"),
@@ -314,11 +315,9 @@ def test_segment_structure_allin1_plumbing(monkeypatch, tmp_path):
             ]
         )
 
-    helpers = types.ModuleType("allin1_mlx.helpers")
-    helpers.run_inference_mlx_spec = fake_run_inference_mlx_spec
+    monkeypatch.setattr(mod, "_functional_result", fake_functional_result)
     spec_mod = types.ModuleType("allin1_mlx.spectrogram")
     spec_mod.spectrogram_from_stems = fake_spectrogram_from_stems
-    monkeypatch.setitem(sys.modules, "allin1_mlx.helpers", helpers)
     monkeypatch.setitem(sys.modules, "allin1_mlx.spectrogram", spec_mod)
 
     audio_path = tmp_path / "track.wav"
@@ -339,8 +338,8 @@ def test_segment_structure_allin1_plumbing(monkeypatch, tmp_path):
     assert spec_calls["return_mx"] is True
     assert spec_calls["sample_rate"] == 44100
     assert spec_calls["backend"] == "mlx_fast"
-    assert inf_calls["compile_forward"] is False
-    assert inf_calls["include_embeddings"] is False
+    assert inf_calls["spec"] == "spec"
+    assert inf_calls["model"] is model
     assert [s.label for s in out.segments] == ["intro", "verse", "outro"]
     assert out.source == "allin1"
 
@@ -369,11 +368,8 @@ def test_segment_structure_allin1_sample_rate_mismatch_raises(monkeypatch, tmp_p
         lambda _wd: SimpleNamespace(cfg=SimpleNamespace(sample_rate=48000)),
     )
 
-    helpers = types.ModuleType("allin1_mlx.helpers")
-    helpers.run_inference_mlx_spec = lambda **_: SimpleNamespace(segments=[])
     spec_mod = types.ModuleType("allin1_mlx.spectrogram")
     spec_mod.spectrogram_from_stems = lambda **_: "spec"
-    monkeypatch.setitem(sys.modules, "allin1_mlx.helpers", helpers)
     monkeypatch.setitem(sys.modules, "allin1_mlx.spectrogram", spec_mod)
 
     beat = BeatAnalysis(
@@ -385,6 +381,101 @@ def test_segment_structure_allin1_sample_rate_mismatch_raises(monkeypatch, tmp_p
     )
     with pytest.raises(RuntimeError, match="samplerate"):
         segment_structure_allin1("track.wav", np.zeros(100), 44100, beat)
+
+
+def test_functional_result_prob_plumbing(monkeypatch):
+    """_functional_result computes probs exactly as run_inference_mlx_spec does."""
+    import autohotcue._allin1 as mod
+
+    fake_mx = types.ModuleType("mlx.core")
+    fake_mx.array = np.asarray
+    fake_mx.sigmoid = lambda x: 1.0 / (1.0 + np.exp(-x))
+    fake_mx.softmax = lambda x, axis: np.exp(x) / np.exp(x).sum(axis=axis, keepdims=True)
+    fake_mx.eval = lambda *_: None
+    fake_mlx = types.ModuleType("mlx")
+    fake_mlx.core = fake_mx
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_mx)
+
+    calls: dict[str, object] = {}
+
+    def fake_postprocess(logits, cfg, prob_sections, prob_functions):
+        del logits
+        calls["cfg"] = cfg
+        calls["prob_sections"] = prob_sections
+        calls["prob_functions"] = prob_functions
+        return ["SEG"]
+
+    fn_mod = types.ModuleType("allin1_mlx.postprocessing.functional_mlx")
+    fn_mod.postprocess_functional_structure_mlx = fake_postprocess
+    monkeypatch.setitem(
+        sys.modules, "allin1_mlx.postprocessing.functional_mlx", fn_mod
+    )
+
+    rng = np.random.default_rng(1)
+    sec = rng.standard_normal((1, 50)).astype(np.float32)
+    fun = rng.standard_normal((1, 10, 50)).astype(np.float32)
+
+    class FakeModel:
+        cfg = "cfg"
+
+        def __call__(self, x, return_embeddings=True):
+            assert return_embeddings is False
+            assert x.shape == (1, 4, 50, 81)
+            return SimpleNamespace(logits_section=sec, logits_function=fun)
+
+    spec = np.zeros((4, 50, 81), dtype=np.float32)
+    result = mod._functional_result(spec, FakeModel())
+    assert result.segments == ["SEG"]
+    assert calls["cfg"] == "cfg"
+    np.testing.assert_allclose(
+        calls["prob_sections"], 1.0 / (1.0 + np.exp(-sec[0])), rtol=1e-6
+    )
+    np.testing.assert_allclose(calls["prob_functions"].sum(axis=0), 1.0, rtol=1e-5)
+
+
+def _allin1_runtime_available() -> bool:
+    try:
+        import mlx.core  # noqa: F401
+        from allin1_mlx.helpers import run_inference_mlx_spec  # noqa: F401
+
+        resolve_weights_dir()
+        return True
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(
+    not _allin1_runtime_available(),
+    reason="mlx / all-in-one-mlx runtime or weights unavailable",
+)
+def test_functional_result_matches_run_inference_mlx_spec():
+    """Parity: segments identical to the full helper on the same spec/model."""
+    import mlx.core as mx
+    from allin1_mlx.helpers import run_inference_mlx_spec
+
+    import autohotcue._allin1 as mod
+
+    model = mod._get_model(mod.resolve_weights_dir())
+    rng = np.random.default_rng(0)
+    spec = mx.array(rng.standard_normal((4, 3000, 81)).astype(np.float32))
+
+    old = run_inference_mlx_spec(
+        path=Path("x.wav"),
+        spec=spec,
+        model=model,
+        include_activations=False,
+        include_embeddings=False,
+        compile_forward=False,
+    )
+    new = mod._functional_result(spec, model)
+
+    assert len(old.segments) == len(new.segments) > 0
+    assert [s.label for s in old.segments] == [s.label for s in new.segments]
+    assert np.allclose(
+        [s.start for s in old.segments], [s.start for s in new.segments]
+    )
+    assert np.allclose([s.end for s in old.segments], [s.end for s in new.segments])
 
 
 def test_bench_parse_engines_includes_allin1():

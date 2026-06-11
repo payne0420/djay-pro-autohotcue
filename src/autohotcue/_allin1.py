@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -229,6 +230,37 @@ def _map_allin1_segments(result, duration_s: float) -> list[Segment]:
     return segments
 
 
+def _functional_result(spec, model) -> SimpleNamespace:
+    """Model forward + functional postprocess only.
+
+    Mirrors allin1_mlx.helpers.run_inference_mlx_spec minus the metrical DBN
+    (its beats/downbeats/BPM are discarded — beat_this is the beat source),
+    which costs ~1.4s/222s track. Probabilities are computed exactly as the
+    helper does, so the functional postprocess sees identical inputs.
+    """
+    import mlx.core as mx
+
+    try:
+        from allin1_mlx.postprocessing.functional_mlx import (
+            postprocess_functional_structure_mlx,
+        )
+    except ImportError as exc:
+        raise _import_error(exc) from exc
+
+    spec_mx = spec if spec.__class__.__module__.startswith("mlx") else mx.array(spec)
+    logits = model(spec_mx[None, ...], return_embeddings=False)
+    prob_section = mx.sigmoid(logits.logits_section[0])
+    prob_function = mx.softmax(logits.logits_function[0], axis=0)
+    mx.eval(prob_section, prob_function)
+    segments = postprocess_functional_structure_mlx(
+        logits,
+        model.cfg,
+        prob_sections=np.array(prob_section, copy=False),
+        prob_functions=np.array(prob_function, copy=False),
+    )
+    return SimpleNamespace(segments=segments)
+
+
 def segment_structure_allin1(
     path: str,
     y: np.ndarray,
@@ -239,7 +271,6 @@ def segment_structure_allin1(
     # demucs reads *path*; y/sr are the ffmpeg decode used for energy ranks
     weights_dir = resolve_weights_dir()
     try:
-        from allin1_mlx.helpers import run_inference_mlx_spec
         from allin1_mlx.spectrogram import spectrogram_from_stems
     except ImportError as exc:
         raise _import_error(exc) from exc
@@ -265,14 +296,7 @@ def segment_structure_allin1(
             return_mx=True,
         )
         del stems  # ~0.5 GB of MLX stem audio; inference is the memory peak
-        result = run_inference_mlx_spec(
-            path=Path(path),
-            spec=spec,
-            model=model,
-            include_activations=False,
-            include_embeddings=False,
-            compile_forward=False,
-        )
+        result = _functional_result(spec, model)
         segments = _map_allin1_segments(result, beat.duration_s)
         segments = _energy_ranks_for_segments(y, sr, segments)
         return StructureAnalysis(segments=segments, source="allin1")

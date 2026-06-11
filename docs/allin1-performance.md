@@ -167,13 +167,8 @@ is corrected bookkeeping: the engine was never 80-260s/track on clean runs.
 
 ## Remaining recoverable speedups (ranked by effort)
 
-1. **Skip the metrical DBN postprocess** (~1.4s/222s track, ~2.7s/396s track —
-   ~13% of marginal cost). autohotcue only consumes `result.segments`; beats/
-   downbeats/BPM from allin1 are discarded in favor of beat_this. Calling the
-   model forward + `postprocess_functional_structure_mlx` directly in
-   `_allin1.py` instead of `run_inference_mlx_spec` removes the DBN entirely.
-   Moderate, contained rewrite of one call site; needs a segments-parity test
-   against the current path before adoption. Proposed, not implemented.
+1. **Skip the metrical DBN postprocess** — applied, see the follow-up section
+   below (inference 1.8s → 0.3s on a 222s track).
 2. **Share the band-energy STFT** (~0.2-0.7s/track). `_energy_ranks_for_segments`
    recomputes `band_energy` over the full track; a folder run could cache it per
    track alongside the decode. Small, low risk, low payoff.
@@ -229,6 +224,27 @@ inference — an upstream-model change with quality implications, not a
 configuration option; on top of the torch baseline (~3-4 GB) it sets the floor
 for current peaks. Skipping the discarded metrical DBN (proposed above) would
 cut time but not this peak, since the forward pass itself is the high-water mark.
+
+## Follow-up: metrical DBN skipped
+
+`run_inference_mlx_spec` always runs the metrical postprocess — a Viterbi DBN
+decoding beats/downbeats/BPM that autohotcue discards (beat_this is the beat
+source). `_allin1._functional_result` now replaces that helper: same forward
+pass, same probability computation (sigmoid of `logits_section[0]`, softmax of
+`logits_function[0]` over axis 0 — passed in so the functional postprocess's
+own recompute branch stays off, exactly as the helper did), then
+`postprocess_functional_structure_mlx` only.
+
+Parity: on the same spec and model, segments are identical to the full helper —
+verified on a real track (12/12 segments, labels and boundaries exact) and
+pinned by `test_functional_result_matches_run_inference_mlx_spec` (real fold0
+weights, seeded synthetic spec; skips where the runtime is absent) plus a
+CI-safe plumbing test.
+
+Measured: inference step 1.80s → 0.30s (222s track), 3.2-3.6s → ~0.6s (396s
+track, from the nn/DBN split). End-to-end CLI: Kelsier 11.7-12.8s,
+Green & Blue 20.1s. The forward pass still materializes the full graph, so the
+MLX memory peak is unchanged.
 
 ## Measurement caveats
 

@@ -14,10 +14,13 @@ to beat_this downbeats via `cuepolicy.py`.
 | 3. Local patched install | Not needed. |
 | 4. Python 3.12 sidecar | Not needed. |
 
-Additional workaround in autohotcue: PyPI `all-in-one-mlx` 1.0.5 `helpers.py` passes
+Additional workaround in autohotcue: PyPI `all-in-one-mlx` 1.0.5 passes
 `return_embeddings=` to single-fold `AllInOneMLX`, which rejects it. We use **harmonix-fold0**
-with a thin `_AllInOneForwardWrapper` and `compile_forward=False` (ensemble `harmonix-all`
-accepts the kwarg but is ~3× slower).
+behind a thin `_AllInOneForwardWrapper` (ensemble `harmonix-all` accepts the kwarg but is
+~3× slower). Inference runs a direct forward + functional postprocess
+(`_allin1._functional_result`) instead of `run_inference_mlx_spec`, skipping the metrical
+DBN whose beats/downbeats autohotcue discards in favor of beat_this — segment parity with
+the helper is pinned by tests (see `docs/allin1-performance.md`).
 
 ## Prerequisites
 
@@ -47,8 +50,8 @@ uv run autohotcue bench truth.json --engines ml,ml-allin1,legacy
 
 | Track | audio | ml (librosa) | ml-allin1 |
 |-------|-------|-------------|-----------|
-| O'Flynn — Kelsier | 222s | 5.7s | 13.3s |
-| Maty Owl — Green & Blue (Extended) | 396s | 8.0s | 21.4s |
+| O'Flynn — Kelsier | 222s | 5.7s | ~12.3s |
+| Maty Owl — Green & Blue (Extended) | 396s | 8.0s | ~20.1s |
 
 Earlier figures of 57-260s/track were measured under GPU/memory contention and
 are wrong by 4-11x — see `docs/allin1-performance.md` for the clean per-phase
