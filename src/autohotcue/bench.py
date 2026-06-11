@@ -23,24 +23,25 @@ class SlotMetrics:
     hits_beat: int = 0
     hits_bar: int = 0
     mae_sum: float = 0.0
+    mae_n: int = 0
 
     def record(self, predicted: float, truth: float, beat_s: float, bar_s: float) -> None:
         self.n += 1
         err = abs(predicted - truth)
         self.mae_sum += err
+        self.mae_n += 1
         if err <= beat_s:
             self.hits_beat += 1
         if err <= bar_s:
             self.hits_bar += 1
 
-    def record_miss(self, bar_s: float) -> None:
-        """Count a labeled slot with no predicted cue as a miss."""
+    def record_miss(self) -> None:
+        """Count a labeled slot with no predicted cue as a miss (no MAE entry)."""
         self.n += 1
-        self.mae_sum += 4.0 * bar_s
 
     @property
     def mae(self) -> float:
-        return self.mae_sum / self.n if self.n else 0.0
+        return self.mae_sum / self.mae_n if self.mae_n else 0.0
 
     @property
     def hit_rate_beat(self) -> float:
@@ -133,7 +134,7 @@ def evaluate_proposal(
     for letter, t_truth in truth.cues.items():
         t_pred = prop.positions.get(letter)
         if t_pred is None:
-            result.slot(letter).record_miss(bar_s)
+            result.slot(letter).record_miss()
         else:
             result.slot(letter).record(t_pred, t_truth, beat_s, bar_s)
 
@@ -144,11 +145,23 @@ class TrackBenchResult:
     slots: dict[str, SlotMetrics] = field(default_factory=dict)
 
 
+def bench_known_bpm(
+    path: str,
+    bpm_lookup,
+    yardsticks: dict[str, float],
+) -> float:
+    """BPM passed to analysis: djay/--bpm when set, else the shared yardstick."""
+    bpm = bpm_lookup(path)
+    if bpm is not None and bpm > 0:
+        return bpm
+    return yardsticks[path]
+
+
 def bench_one_track(
     engine: str,
     gt: GroundTruthTrack,
     yardstick: float,
-    known_bpm: float | None,
+    known_bpm: float,
 ) -> TrackBenchResult:
     """Picklable ProcessPool entry point for one labeled track."""
     t0 = time.perf_counter()
@@ -174,6 +187,7 @@ def _merge_track_result(result: EngineResult, track_result: TrackBenchResult) ->
         slot.hits_beat += metrics.hits_beat
         slot.hits_bar += metrics.hits_bar
         slot.mae_sum += metrics.mae_sum
+        slot.mae_n += metrics.mae_n
 
 
 def run_engine(
@@ -203,7 +217,7 @@ def run_engine(
                     engine,
                     gt,
                     yardsticks[gt.path],
-                    bpm_lookup(gt.path),
+                    bench_known_bpm(gt.path, bpm_lookup, yardsticks),
                 ): gt
                 for gt in runnable
             }
@@ -219,7 +233,7 @@ def run_engine(
                     engine,
                     gt,
                     yardsticks[gt.path],
-                    bpm_lookup(gt.path),
+                    bench_known_bpm(gt.path, bpm_lookup, yardsticks),
                 ),
             )
     return result

@@ -235,12 +235,18 @@ def propose_cues(
         p.notes.append("track too short for structure analysis; first beat only")
         return p
 
+    saw_intro = False
     intro_end: float | None = None
     for seg in segments:
-        if seg.label != "intro":
+        if seg.label == "intro":
+            saw_intro = True
+        elif intro_end is None:
             intro_end = seg.start
             break
-    b = _snap(beat, intro_end if intro_end is not None else a)
+    if saw_intro and intro_end is not None:
+        b = _snap(beat, intro_end)
+    else:
+        b = a
     p.positions["B"] = b
 
     high, low = _resolve_high_low(segments)

@@ -159,6 +159,7 @@ def test_sub_bar_segment_merged():
 def test_intro_less_b_equals_a():
     beat = mk_beat(120.0, 64, meter=4)
     bar = beat.bar_s()
+    # First segment at t=0 (no intro label).
     structure = mk_segs([
         ("verse", 0, 16 * bar, 0.4),
         ("chorus", 16 * bar, 48 * bar, 0.9),
@@ -167,6 +168,15 @@ def test_intro_less_b_equals_a():
     ])
     p = propose_cues(beat, structure)
     assert p.positions["B"] == p.positions["A"]
+
+    # Gap before first segment: B must still fall back to A, not the first boundary.
+    structure_delayed = mk_segs([
+        ("verse", 8 * bar, 16 * bar, 0.4),
+        ("chorus", 16 * bar, 48 * bar, 0.9),
+        ("outro", 48 * bar, 64 * bar, 0.15),
+    ])
+    p2 = propose_cues(beat, structure_delayed)
+    assert p2.positions["B"] == p2.positions["A"]
 
 
 def test_three_four_meter():
@@ -190,19 +200,27 @@ def test_three_four_meter():
 
 
 def test_violation_omits_not_clamps():
-    beat = mk_beat(120.0, 64, meter=4)
-    bar = beat.bar_s()
-    # Breakdown starts before drop — should omit, not reorder/clamp.
-    structure = mk_segs([
-        ("intro", 0, 8 * bar, 0.1),
-        ("break", 8 * bar, 24 * bar, 0.1),
-        ("chorus", 24 * bar, 48 * bar, 0.95),
-        ("outro", 48 * bar, 64 * bar, 0.2),
-    ])
-    p = propose_cues(beat, structure)
-    if "C" in p.positions and "D" in p.positions:
-        assert p.positions["C"] < p.positions["D"]
-    assert any("monotonicity" in n or "omitted" in n for n in p.notes) or "E" not in p.positions
+    from autohotcue.analysis import CueProposal
+    from autohotcue.cuepolicy import _check_monotonicity
+
+    violating_c = 20.0
+    d_at = 20.0
+    p = CueProposal(
+        positions={
+            "A": 0.0,
+            "B": 10.0,
+            "C": violating_c,
+            "D": d_at,
+            "E": 30.0,
+            "F": 40.0,
+            "G": 50.0,
+            "H": 50.0,
+        }
+    )
+    _check_monotonicity(p)
+    assert "C" not in p.positions
+    assert p.positions["D"] == d_at
+    assert any("C" in n and "monotonicity" in n for n in p.notes)
 
 
 def test_short_track_ab_only():
