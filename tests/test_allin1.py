@@ -1,6 +1,8 @@
 """Unit tests for ml-allin1 label mapping and engine validation (no model)."""
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,11 +13,13 @@ from autohotcue import analysis
 from autohotcue._allin1 import (
     ALLIN1_LABELS,
     _AllInOneForwardWrapper,
+    _WEIGHTS_MARKER,
     _energy_ranks_for_segments,
     _map_allin1_segments,
     resolve_weights_dir,
+    segment_structure_allin1,
 )
-from autohotcue.backends import Segment
+from autohotcue.backends import BeatAnalysis, Segment
 
 
 def test_normalize_engine_aliases():
@@ -54,9 +58,32 @@ def test_allin1_label_mapping_verbatim():
     segs = _map_allin1_segments(result, duration_s=160.0)
     labels = [s.label for s in segs]
     assert labels == [
-        "intro", "verse", "chorus", "bridge", "break", "inst", "solo", "outro",
+        "intro",
+        "verse",
+        "chorus",
+        "bridge",
+        "break",
+        "inst",
+        "solo",
+        "outro",
+        "intro",
+        "outro",
     ]
     assert set(labels).issubset(ALLIN1_LABELS)
+
+
+def test_allin1_start_end_map_to_edge_labels():
+    result = SimpleNamespace(
+        segments=[
+            SimpleNamespace(start=0.0, end=24.0, label="start"),
+            SimpleNamespace(start=24.0, end=96.0, label="verse"),
+            SimpleNamespace(start=96.0, end=120.0, label="end"),
+        ]
+    )
+    segs = _map_allin1_segments(result, duration_s=120.0)
+    assert [s.label for s in segs] == ["intro", "verse", "outro"]
+    assert segs[0].start == 0.0
+    assert segs[-1].end == 120.0
 
 
 def test_allin1_unknown_label_raises():
@@ -121,13 +148,149 @@ def test_allin1_forward_wrapper():
     assert w(np.array([1.0]), return_embeddings=True) == 1.0
 
 
+def test_resolve_weights_dir_env_overrides_stale_cache(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    cache = home / ".cache/autohotcue/mlx-weights"
+    cache.mkdir(parents=True)
+    (cache / _WEIGHTS_MARKER).write_bytes(b"cached")
+
+    experimental = tmp_path / "experimental"
+    experimental.mkdir()
+    (experimental / _WEIGHTS_MARKER).write_bytes(b"new")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("ALLIN1_MLX_WEIGHTS_DIR", str(experimental))
+
+    assert resolve_weights_dir() == experimental.resolve()
+
+
 @pytest.mark.skipif(
     not (Path("all-in-one-mlx/mlx-weights/harmonix-fold0_mlx.npz").is_file()),
     reason="mlx weights not present (clone all-in-one-mlx with mlx-weights/)",
 )
 def test_resolve_weights_dir_finds_clone():
     d = resolve_weights_dir()
-    assert (d / "harmonix-fold0_mlx.npz").is_file()
+    assert (d / _WEIGHTS_MARKER).is_file()
+
+
+def test_segment_structure_allin1_plumbing(monkeypatch, tmp_path):
+    """Mock demucs/inference path: return_mx, sample_rate, edge labels, errors."""
+    import autohotcue._allin1 as mod
+
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    (weights / _WEIGHTS_MARKER).write_bytes(b"x")
+    monkeypatch.setattr(mod, "resolve_weights_dir", lambda: weights)
+    monkeypatch.setattr(mod, "_check_platform", lambda: None)
+    monkeypatch.setattr(mod, "_ensure_mlx_env", lambda: None)
+
+    sep_calls: dict[str, object] = {}
+
+    class FakeSeparator:
+        samplerate = 44100
+
+        def separate_audio_file(self, path, return_mx=False):
+            sep_calls["path"] = path
+            sep_calls["return_mx"] = return_mx
+            return None, "stems_mx"
+
+    model = SimpleNamespace(cfg=SimpleNamespace(sample_rate=44100))
+    monkeypatch.setattr(mod, "_get_separator", lambda: FakeSeparator())
+    monkeypatch.setattr(mod, "_get_model", lambda _wd: model)
+
+    spec_calls: dict[str, object] = {}
+
+    def fake_spectrogram_from_stems(stems, sample_rate, backend, return_mx):
+        spec_calls["stems"] = stems
+        spec_calls["sample_rate"] = sample_rate
+        spec_calls["backend"] = backend
+        spec_calls["return_mx"] = return_mx
+        return "spec"
+
+    inf_calls: dict[str, object] = {}
+
+    def fake_run_inference_mlx_spec(**kwargs):
+        inf_calls.update(kwargs)
+        return SimpleNamespace(
+            segments=[
+                SimpleNamespace(start=0.0, end=16.0, label="start"),
+                SimpleNamespace(start=16.0, end=48.0, label="verse"),
+                SimpleNamespace(start=48.0, end=64.0, label="end"),
+            ]
+        )
+
+    helpers = types.ModuleType("allin1_mlx.helpers")
+    helpers.run_inference_mlx_spec = fake_run_inference_mlx_spec
+    spec_mod = types.ModuleType("allin1_mlx.spectrogram")
+    spec_mod.spectrogram_from_stems = fake_spectrogram_from_stems
+    monkeypatch.setitem(sys.modules, "allin1_mlx.helpers", helpers)
+    monkeypatch.setitem(sys.modules, "allin1_mlx.spectrogram", spec_mod)
+
+    audio_path = tmp_path / "track.wav"
+    audio_path.write_bytes(b"wav")
+    y = np.zeros(44100 * 2, dtype=np.float32)
+    beat = BeatAnalysis(
+        bpm=120.0,
+        beats=np.linspace(0.0, 2.0, 5),
+        downbeats=np.array([0.0, 1.0, 2.0]),
+        duration_s=64.0,
+        source="test",
+    )
+
+    out = segment_structure_allin1(str(audio_path), y, 44100, beat)
+
+    assert sep_calls["return_mx"] is True
+    assert sep_calls["path"] == str(audio_path)
+    assert spec_calls["return_mx"] is True
+    assert spec_calls["sample_rate"] == 44100
+    assert spec_calls["backend"] == "mlx_fast"
+    assert inf_calls["compile_forward"] is False
+    assert inf_calls["include_embeddings"] is False
+    assert [s.label for s in out.segments] == ["intro", "verse", "outro"]
+    assert out.source == "allin1"
+
+
+def test_segment_structure_allin1_sample_rate_mismatch_raises(monkeypatch, tmp_path):
+    import autohotcue._allin1 as mod
+
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    (weights / _WEIGHTS_MARKER).write_bytes(b"x")
+    monkeypatch.setattr(mod, "resolve_weights_dir", lambda: weights)
+    monkeypatch.setattr(mod, "_check_platform", lambda: None)
+    monkeypatch.setattr(mod, "_ensure_mlx_env", lambda: None)
+
+    class FakeSeparator:
+        samplerate = 44100
+
+        def separate_audio_file(self, path, return_mx=False):
+            del path, return_mx
+            return None, "stems_mx"
+
+    monkeypatch.setattr(mod, "_get_separator", lambda: FakeSeparator())
+    monkeypatch.setattr(
+        mod,
+        "_get_model",
+        lambda _wd: SimpleNamespace(cfg=SimpleNamespace(sample_rate=48000)),
+    )
+
+    helpers = types.ModuleType("allin1_mlx.helpers")
+    helpers.run_inference_mlx_spec = lambda **_: SimpleNamespace(segments=[])
+    spec_mod = types.ModuleType("allin1_mlx.spectrogram")
+    spec_mod.spectrogram_from_stems = lambda **_: "spec"
+    monkeypatch.setitem(sys.modules, "allin1_mlx.helpers", helpers)
+    monkeypatch.setitem(sys.modules, "allin1_mlx.spectrogram", spec_mod)
+
+    beat = BeatAnalysis(
+        bpm=120.0,
+        beats=np.array([0.0, 0.5]),
+        downbeats=np.array([0.0]),
+        duration_s=1.0,
+        source="test",
+    )
+    with pytest.raises(RuntimeError, match="samplerate"):
+        segment_structure_allin1("track.wav", np.zeros(100), 44100, beat)
 
 
 def test_bench_parse_engines_includes_allin1():

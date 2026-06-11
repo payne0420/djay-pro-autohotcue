@@ -14,7 +14,8 @@ from autohotcue.backends import BeatAnalysis, Segment, StructureAnalysis
 ALLIN1_LABELS = frozenset(
     {"intro", "verse", "chorus", "bridge", "break", "inst", "solo", "outro"}
 )
-_SKIP_LABELS = frozenset({"start", "end"})
+# HARMONIX fold0 emits start/end at track edges; cuepolicy EDGE = {intro, outro}.
+_EDGE_LABEL_MAP = {"start": "intro", "end": "outro"}
 _WEIGHTS_MARKER = "harmonix-fold0_mlx.npz"
 _MODEL_NAME = "harmonix-fold0"
 
@@ -69,11 +70,20 @@ def _has_weights(path: Path) -> bool:
 
 def resolve_weights_dir() -> Path:
     """Return a directory containing harmonix-fold0_mlx.npz."""
+    env = os.environ.get("ALLIN1_MLX_WEIGHTS_DIR")
+    if env:
+        env_path = Path(env).expanduser().resolve()
+        if _has_weights(env_path):
+            return env_path
+
     cache = Path.home() / ".cache/autohotcue/mlx-weights"
     if _has_weights(cache):
         return cache.resolve()
     for candidate in _candidate_weight_dirs():
-        if candidate.resolve() == cache.resolve():
+        resolved = candidate.expanduser().resolve()
+        if resolved == cache.resolve():
+            continue
+        if env and resolved == Path(env).expanduser().resolve():
             continue
         if _has_weights(candidate):
             cache.parent.mkdir(parents=True, exist_ok=True)
@@ -159,8 +169,7 @@ def _map_allin1_segments(result, duration_s: float) -> list[Segment]:
     segments: list[Segment] = []
     for seg in result.segments:
         label = seg.label.lower()
-        if label in _SKIP_LABELS:
-            continue
+        label = _EDGE_LABEL_MAP.get(label, label)
         if label not in ALLIN1_LABELS:
             raise ValueError(
                 f"unknown all-in-one segment label {seg.label!r} "
@@ -198,10 +207,17 @@ def segment_structure_allin1(
     _ensure_mlx_env()
     separator = _get_separator()
     model = _get_model(weights_dir)
+    sep_sr = separator.samplerate
+    model_sr = model.cfg.sample_rate
+    if sep_sr != model_sr:
+        raise RuntimeError(
+            f"demucs samplerate ({sep_sr}) != all-in-one model sample_rate "
+            f"({model_sr}); segment timestamps would be mis-scaled"
+        )
     _, stems = separator.separate_audio_file(path, return_mx=True)
     spec = spectrogram_from_stems(
         stems,
-        sample_rate=separator.samplerate,
+        sample_rate=sep_sr,
         backend="mlx_fast",
         return_mx=True,
     )
