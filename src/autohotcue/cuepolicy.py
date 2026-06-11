@@ -33,7 +33,11 @@ def _normalize_segments(segments: list[Segment], bar_s: float) -> list[Segment]:
         while i + 1 < len(segs) and (seg.end - seg.start) < bar_s:
             nxt = segs[i + 1]
             if seg.end >= nxt.start - 1e-9:
-                merged_start = nxt.start
+                merged_start = (
+                    min(seg.start, nxt.start)
+                    if seg.label == nxt.label
+                    else nxt.start
+                )
             else:
                 merged_start = seg.start
             seg = Segment(
@@ -61,15 +65,34 @@ def _normalize_segments(segments: list[Segment], bar_s: float) -> list[Segment]:
     return out
 
 
+def _sole_extreme_index(
+    indices: list[int],
+    segments: list[Segment],
+    *,
+    highest: bool,
+) -> int | None:
+    """Return the only index at max/min rank, or None when tied."""
+    if not indices:
+        return None
+    ranks = [segments[i].energy_rank for i in indices]
+    target = max(ranks) if highest else min(ranks)
+    winners = [i for i in indices if segments[i].energy_rank == target]
+    return winners[0] if len(winners) == 1 else None
+
+
 def _resolve_high_low(segments: list[Segment]) -> tuple[set[int], set[int]]:
     non_edge = [i for i, s in enumerate(segments) if s.label not in EDGE_LABELS]
     high = {i for i, s in enumerate(segments) if s.label in HIGH_LABELS}
     low = {i for i, s in enumerate(segments) if s.label in LOW_LABELS}
 
     if not high and non_edge:
-        high.add(max(non_edge, key=lambda i: segments[i].energy_rank))
+        winner = _sole_extreme_index(non_edge, segments, highest=True)
+        if winner is not None:
+            high.add(winner)
     if not low and non_edge:
-        low.add(min(non_edge, key=lambda i: segments[i].energy_rank))
+        winner = _sole_extreme_index(non_edge, segments, highest=False)
+        if winner is not None:
+            low.add(winner)
     return high, low
 
 
@@ -102,15 +125,12 @@ def _first_low_after(
 
 
 def _max_rank_non_edge(segments: list[Segment], after_t: float) -> int | None:
-    best: int | None = None
-    best_rank = -1.0
-    for i, seg in enumerate(segments):
-        if seg.label in EDGE_LABELS or seg.start <= after_t:
-            continue
-        if seg.energy_rank > best_rank:
-            best_rank = seg.energy_rank
-            best = i
-    return best
+    candidates = [
+        i
+        for i, seg in enumerate(segments)
+        if seg.label not in EDGE_LABELS and seg.start > after_t
+    ]
+    return _sole_extreme_index(candidates, segments, highest=True)
 
 
 def _min_rank_between(
@@ -118,17 +138,12 @@ def _min_rank_between(
     after_t: float,
     before_t: float,
 ) -> int | None:
-    best: int | None = None
-    best_rank = float("inf")
-    for i, seg in enumerate(segments):
-        if seg.label in EDGE_LABELS:
-            continue
-        if seg.start <= after_t or seg.start >= before_t:
-            continue
-        if seg.energy_rank < best_rank:
-            best_rank = seg.energy_rank
-            best = i
-    return best
+    candidates = [
+        i
+        for i, seg in enumerate(segments)
+        if seg.label not in EDGE_LABELS and after_t < seg.start < before_t
+    ]
+    return _sole_extreme_index(candidates, segments, highest=False)
 
 
 def _apply_outro_guard(
@@ -238,6 +253,16 @@ def propose_cues(
     if len(non_edge) < 2:
         p.notes.append("no drop detected (< 2 non-edge segments)")
         d_idx = None
+    elif d_idx is None:
+        drop_candidates = [
+            i
+            for i, seg in enumerate(segments)
+            if seg.label not in EDGE_LABELS and seg.start > a
+        ]
+        if len(drop_candidates) >= 2 and _sole_extreme_index(
+            drop_candidates, segments, highest=True
+        ) is None:
+            p.notes.append("no drop detected (ambiguous energy rank)")
 
     d_t: float | None = None
     if d_idx is not None:

@@ -90,6 +90,10 @@ def test_ml_analyze_real_track(track_path: str):
 @pytest.mark.skipif(not library_exists, reason="real djay library not present")
 @pytest.mark.skipif(not Path(APPLY_TRACK).is_file(), reason="apply e2e track missing")
 def test_apply_verify_roundtrip(tmp_path):
+    from autohotcue.cli import _djay_running
+
+    if _djay_running():
+        pytest.skip("djay Pro is running — quit it before apply e2e")
     """Copy library to tmp_path, apply ml cues, verify readback matches proposal."""
     lib_dir = tmp_path / "libcopy"
     lib_dir.mkdir()

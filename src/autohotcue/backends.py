@@ -225,7 +225,7 @@ def segment_structure(
     k = min(k, max(2, n_beats - 1))
     x_feat = evecs[:, :k] / np.maximum(cnorm[:, k - 1 : k], 1e-8)
 
-    km = sklearn.cluster.KMeans(n_clusters=k, n_init="auto")
+    km = sklearn.cluster.KMeans(n_clusters=k, n_init="auto", random_state=0)
     seg_ids = km.fit_predict(x_feat)
 
     bound_beats = 1 + np.flatnonzero(seg_ids[:-1] != seg_ids[1:])

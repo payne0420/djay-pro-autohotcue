@@ -76,21 +76,19 @@ def test_canonical_edm_all_eight_on_downbeats():
 
 def test_f_fallback_without_e():
     """When E is omitted, F is the first HIGH after D (second HIGH overall)."""
-    from autohotcue.cuepolicy import _first_high_after, _resolve_high_low
-
-    segments = [
-        Segment(0, 32, "intro", 0.1),
-        Segment(32, 64, "verse", 0.4),
-        Segment(64, 128, "chorus", 0.95),
-        Segment(128, 224, "solo", 0.9),
-        Segment(224, 256, "outro", 0.2),
-    ]
-    high, _ = _resolve_high_low(segments)
-    d_idx = 2
-    f_idx = _first_high_after(segments, high, segments[d_idx].start)
-    assert f_idx == 3
-    found = sum(1 for i, _ in enumerate(segments) if i in high and i > d_idx)
-    assert found == 1
+    beat = mk_beat(120.0, 128, meter=4)
+    structure = mk_segs([
+        ("intro", 0, 32, 0.1),
+        ("verse", 32, 64, 0.4),
+        ("chorus", 64, 200, 0.95),
+        ("solo", 224, 256, 0.9),
+        ("outro", 224, 256, 0.2),
+    ])
+    p = propose_cues(beat, structure)
+    assert "E" not in p.positions
+    assert any("Breakdown" in n and "omitted" in n for n in p.notes)
+    assert "F" in p.positions
+    assert p.positions["F"] == pytest.approx(224)
 
 
 def test_outro_guard_regression():
@@ -131,12 +129,13 @@ def test_uniform_ranks_drop_breakdown_second_drop_omitted():
     structure = mk_segs([
         ("intro", 0, 8 * bar, 0.5),
         ("verse", 8 * bar, 24 * bar, 0.5),
-        ("verse", 24 * bar, 40 * bar, 0.5),
+        ("bridge", 24 * bar, 40 * bar, 0.5),
         ("verse", 40 * bar, 56 * bar, 0.5),
         ("outro", 56 * bar, 64 * bar, 0.5),
     ])
     p = propose_cues(beat, structure)
-    assert "D" not in p.positions or any("no drop" in n.lower() or "monotonicity" in n for n in p.notes)
+    assert "D" not in p.positions
+    assert any("no drop" in n.lower() for n in p.notes)
     assert "E" not in p.positions
     assert "F" not in p.positions
 

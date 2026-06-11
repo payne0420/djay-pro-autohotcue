@@ -12,6 +12,7 @@ from autohotcue.bench import (
     SlotMetrics,
     evaluate_proposal,
     load_ground_truth,
+    parse_engines,
     yardstick_bpm,
 )
 
@@ -77,3 +78,12 @@ def test_yardstick_bpm_falls_back_to_tracked():
         djay_bpm=None,
     )
     assert yardstick_bpm(track, fallback=None) == 126.0
+
+
+def test_parse_engines_accepts_valid():
+    assert parse_engines("ml, legacy") == ["ml", "legacy"]
+
+
+def test_parse_engines_rejects_unknown():
+    with pytest.raises(SystemExit, match="unknown engine"):
+        parse_engines("ml,typo")
