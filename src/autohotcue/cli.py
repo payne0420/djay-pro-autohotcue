@@ -9,6 +9,7 @@ Commands:
     viz      PATH OUT.png  render a waveform + cue map
     apply    PATH          write cues into djay's library (djay must be quit)
     verify   PATH          read back the cues djay has stored
+    bench    TRUTH.json    score engines against hand-labeled ground truth
 
 PATH for propose/apply/verify may be a single audio file or a directory,
 which is scanned recursively. A directory `apply` takes one backup for the
@@ -25,7 +26,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
-from autohotcue import analysis, djaydb
+from autohotcue import analysis, backends, djaydb
 
 AUDIO_EXTS = {".aac", ".aif", ".aiff", ".flac", ".m4a", ".mp3",
               ".oga", ".ogg", ".opus", ".wav", ".wma"}
@@ -59,6 +60,10 @@ def _resolve_jobs(n: int) -> int:
     return (os.cpu_count() or 1) if n == 0 else max(1, n)
 
 
+def _pool_initargs(jobs: int) -> tuple:
+    return (jobs,)
+
+
 def _bpm_for(db: djaydb.DjayDB, key: str, fallback: float | None) -> float:
     """Pull djay's analyzed BPM for the track if present."""
     from autohotcue import tsaf
@@ -78,8 +83,11 @@ def _djay_running() -> bool:
     return out.returncode == 0
 
 
-def _print_proposal(grid, prop):
-    print(f"grid: {grid.bpm:.1f} BPM, anchor {grid.first_beat_s:.3f}s, {grid.duration_s:.1f}s")
+def _print_proposal(track: analysis.TrackAnalysis, prop: analysis.CueProposal) -> None:
+    print(
+        f"{track.engine}: {track.bpm:.1f} BPM, anchor {track.first_beat_s:.3f}s, "
+        f"{track.duration_s:.1f}s"
+    )
     for pad in "ABCDEFGH":
         t = prop.positions.get(pad)
         if t is not None:
@@ -95,30 +103,51 @@ def cmd_propose(args):
     jobs = _resolve_jobs(args.jobs)
     failed = 0
     if batch and jobs > 1 and len(paths) > 1:
-        with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as ex:
-            futs = {ex.submit(analysis.propose_cues, p, args.bpm or 120.0): p for p in paths}
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=jobs,
+            initializer=backends.init_worker,
+            initargs=_pool_initargs(jobs),
+        ) as ex:
+            futs = {
+                ex.submit(
+                    analysis.analyze,
+                    p,
+                    args.bpm or 120.0,
+                    args.engine,
+                    None,
+                    jobs,
+                ): p
+                for p in paths
+            }
             for fut in concurrent.futures.as_completed(futs):
                 print(f"\n{Path(futs[fut]).name}")
                 try:
-                    grid, prop = fut.result()
+                    track, prop = fut.result()
                 except Exception as e:
                     print(f"  FAILED: {e}")
                     failed += 1
                     continue
-                _print_proposal(grid, prop)
+                _print_proposal(track, prop)
     else:
+        if jobs == 1:
+            backends.init_worker(1)
         for path in paths:
             if batch:
                 print(f"\n{Path(path).name}", flush=True)
             try:
-                grid, prop = analysis.propose_cues(path, known_bpm=args.bpm or 120.0)
+                track, prop = analysis.analyze(
+                    path,
+                    known_bpm=args.bpm or 120.0,
+                    engine=args.engine,
+                    jobs=1,
+                )
             except Exception as e:
                 if not batch:
                     raise
                 print(f"  FAILED: {e}")
                 failed += 1
                 continue
-            _print_proposal(grid, prop)
+            _print_proposal(track, prop)
     if batch:
         print(f"\n{len(paths) - failed} analyzed, {failed} failed ({len(paths)} files)")
 
@@ -126,8 +155,14 @@ def cmd_propose(args):
 def cmd_viz(args):
     from autohotcue import viz
 
-    grid, prop = analysis.propose_cues(args.path, known_bpm=args.bpm or 120.0)
-    viz.render(args.path, grid, prop, args.out, title=Path(args.path).stem)
+    backends.init_worker(1)
+    track, prop = analysis.analyze(
+        args.path,
+        known_bpm=args.bpm or 120.0,
+        engine=args.engine,
+        jobs=1,
+    )
+    viz.render(args.path, track, prop, args.out, title=Path(args.path).stem)
     print("wrote", args.out)
 
 
@@ -144,8 +179,6 @@ def _precheck_one(db: djaydb.DjayDB, path: str, args):
         raise _Skip("track not found in djay library — import it into djay first "
                     "(add to My Collection)")
 
-    # Read the existing record (if any) as raw bytes so we can guarantee we can
-    # reproduce it byte-for-byte before mutating it — never corrupt other fields.
     raw = db.get_raw("mediaItemUserData", key)
     existing = None
     if raw is not None:
@@ -179,8 +212,6 @@ def _write_one(db: djaydb.DjayDB, key: str, existing, prop, ensure_backup) -> in
     if not cues:
         raise _Skip("analysis produced no cues")
 
-    # Re-check right before touching the DB: djay must not have started during
-    # the (possibly slow) audio analysis.
     if _djay_running():
         raise SystemExit("djay Pro started during analysis — aborting before any write")
 
@@ -218,15 +249,28 @@ def _apply_parallel(db, paths, args, ensure_backup, jobs):
 
     if todo:
         print(f"analyzing {len(todo)} tracks with {jobs} workers", flush=True)
-        ex = concurrent.futures.ProcessPoolExecutor(max_workers=jobs)
+        ex = concurrent.futures.ProcessPoolExecutor(
+            max_workers=jobs,
+            initializer=backends.init_worker,
+            initargs=_pool_initargs(jobs),
+        )
         try:
-            futs = {ex.submit(analysis.propose_cues, path, bpm): (i, path, key, existing)
-                    for i, path, key, existing, bpm in todo}
+            futs = {
+                ex.submit(
+                    analysis.analyze,
+                    path,
+                    bpm,
+                    args.engine,
+                    None,
+                    jobs,
+                ): (i, path, key, existing)
+                for i, path, key, existing, bpm in todo
+            }
             for fut in concurrent.futures.as_completed(futs):
                 i, path, key, existing = futs[fut]
                 print(f"[{i}/{total}] {Path(path).name}", flush=True)
                 try:
-                    grid, prop = fut.result()
+                    track, prop = fut.result()
                     n = _write_one(db, key, existing, prop, ensure_backup)
                 except _Skip as e:
                     print(f"  skip: {e}")
@@ -238,8 +282,6 @@ def _apply_parallel(db, paths, args, ensure_backup, jobs):
                     print(f"  wrote {n} cues")
                     written += 1
         finally:
-            # On abort (djay started, Ctrl-C) drop queued analyses immediately;
-            # nothing else gets written either way.
             ex.shutdown(wait=False, cancel_futures=True)
     return written, skipped, failed
 
@@ -256,8 +298,6 @@ def cmd_apply(args):
     backed_up = False
 
     def ensure_backup():
-        # One backup per run, taken just before the first write, so a run where
-        # every track is skipped leaves no backup behind.
         nonlocal backed_up
         if not backed_up:
             print("backup:", db.backup(backup_dir))
@@ -269,13 +309,20 @@ def cmd_apply(args):
         if batch and jobs > 1 and total > 1:
             written, skipped, failed = _apply_parallel(db, paths, args, ensure_backup, jobs)
         else:
+            if jobs == 1:
+                backends.init_worker(1)
             for i, path in enumerate(paths, 1):
                 name = Path(path).name
                 if batch:
                     print(f"[{i}/{total}] {name}", flush=True)
                 try:
                     key, existing, bpm = _precheck_one(db, path, args)
-                    grid, prop = analysis.propose_cues(path, known_bpm=bpm)
+                    track, prop = analysis.analyze(
+                        path,
+                        known_bpm=bpm,
+                        engine=args.engine,
+                        jobs=1,
+                    )
                     n = _write_one(db, key, existing, prop, ensure_backup)
                 except _Skip as e:
                     if not batch:
@@ -298,7 +345,7 @@ def cmd_apply(args):
             try:
                 db.checkpoint()
             except sqlite3.OperationalError:
-                pass  # djay may have started and grabbed the DB; writes are committed
+                pass
         db.close()
 
 
@@ -334,6 +381,15 @@ def cmd_verify(args):
     db.close()
 
 
+def _add_engine_arg(sp):
+    sp.add_argument(
+        "--engine",
+        choices=("ml", "legacy"),
+        default="ml",
+        help="analysis engine (default: ml)",
+    )
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="autohotcue", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -344,6 +400,7 @@ def main(argv=None):
     sp.add_argument("--bpm", type=float, default=None)
     sp.add_argument("--library", default=None)
     sp.add_argument("-j", "--jobs", type=int, default=1, help=jobs_help)
+    _add_engine_arg(sp)
 
     sp = sub.add_parser("verify")
     sp.add_argument("path", help="audio file, or directory to scan recursively")
@@ -354,6 +411,7 @@ def main(argv=None):
     sp.add_argument("path", help="audio file")
     sp.add_argument("out")
     sp.add_argument("--bpm", type=float, default=None)
+    _add_engine_arg(sp)
 
     sp = sub.add_parser("apply")
     sp.add_argument("path", help="audio file, or directory to scan recursively")
@@ -362,9 +420,24 @@ def main(argv=None):
     sp.add_argument("--backup-dir", default=None)
     sp.add_argument("--force", action="store_true")
     sp.add_argument("-j", "--jobs", type=int, default=1, help=jobs_help)
+    _add_engine_arg(sp)
+
+    sp = sub.add_parser("bench")
+    sp.add_argument("truth_json", help="ground-truth JSON file")
+    sp.add_argument("--engines", default="ml,legacy", help="comma-separated engines to compare")
+    sp.add_argument("--library", default=None, help="djay library for BPM yardstick lookup")
+    sp.add_argument("--bpm", type=float, default=None, help="fallback BPM when not in library")
+    sp.add_argument("-j", "--jobs", type=int, default=1, help=jobs_help)
 
     args = p.parse_args(argv)
-    {"propose": cmd_propose, "viz": cmd_viz, "apply": cmd_apply, "verify": cmd_verify}[args.cmd](args)
+    handlers = {
+        "propose": cmd_propose,
+        "viz": cmd_viz,
+        "apply": cmd_apply,
+        "verify": cmd_verify,
+        "bench": lambda a: __import__("autohotcue.bench", fromlist=["cmd_bench"]).cmd_bench(a),
+    }
+    handlers[args.cmd](args)
 
 
 if __name__ == "__main__":

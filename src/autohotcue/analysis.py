@@ -44,6 +44,20 @@ class CueProposal:
     notes: list[str] = field(default_factory=list)
 
 
+@dataclass
+class TrackAnalysis:
+    """Unified analysis result consumed by cli + viz for both engines."""
+
+    bpm: float
+    first_beat_s: float
+    duration_s: float
+    engine: str
+    beats: np.ndarray | None = None
+    downbeats: np.ndarray | None = None
+    segments: list | None = None  # list[Segment] when ml engine
+    djay_bpm: float | None = None
+
+
 def decode(path: str, sr: int = SR) -> np.ndarray:
     """Decode any audio file to mono float32 via ffmpeg."""
     with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
@@ -142,8 +156,10 @@ def bar_profile(y: np.ndarray, grid: GridAnalysis, sr: int = SR, hop: int = HOP)
     return starts, norm["low"], norm["mid"], norm["high"], norm["total"]
 
 
-def propose_cues(path: str, known_bpm: float, phrase_bars: int = 4) -> tuple[GridAnalysis, CueProposal]:
-    """Analyze a file and propose the 8-cue system positions."""
+def propose_cues_legacy(
+    path: str, known_bpm: float, phrase_bars: int = 4
+) -> tuple[GridAnalysis, CueProposal]:
+    """Legacy band-energy analysis — identical to the pre-overhaul propose_cues."""
     y = decode(path)
     grid = lock_grid(y, known_bpm)
     starts, low, mid, high, total = bar_profile(y, grid)
@@ -258,3 +274,64 @@ def propose_cues(path: str, known_bpm: float, phrase_bars: int = 4) -> tuple[Gri
         p.notes.append("G/H (Outro): fallback near end")
 
     return grid, p
+
+
+def _resolve_device(device: str | None, jobs: int = 1) -> str:
+    """Workers always cpu; mps only when effective jobs == 1."""
+    if jobs > 1:
+        return "cpu"
+    if device:
+        return device
+    try:
+        import torch
+
+        if torch.backends.mps.is_available():
+            return "mps"
+    except ImportError:
+        pass
+    return "cpu"
+
+
+def analyze(
+    path: str,
+    known_bpm: float | None = None,
+    engine: str = "ml",
+    device: str | None = None,
+    jobs: int = 1,
+) -> tuple[TrackAnalysis, CueProposal]:
+    """Analyze a track and propose cues via the ml or legacy engine."""
+    if engine == "legacy":
+        bpm = known_bpm or 120.0
+        grid, prop = propose_cues_legacy(path, bpm)
+        track = TrackAnalysis(
+            bpm=grid.bpm,
+            first_beat_s=grid.first_beat_s,
+            duration_s=grid.duration_s,
+            engine="legacy",
+            djay_bpm=known_bpm,
+        )
+        return track, prop
+
+    from autohotcue.backends import segment_structure, track_beats
+    from autohotcue.cuepolicy import propose_cues as policy_propose
+
+    dev = _resolve_device(device, jobs)
+    y = decode(path)
+    beat = track_beats(y, device=dev)
+    structure = segment_structure(path, y, SR, beat)
+    prop = policy_propose(beat, structure, djay_bpm=known_bpm)
+
+    first_beat = float(beat.downbeats[0]) if len(beat.downbeats) else (
+        float(beat.beats[0]) if len(beat.beats) else 0.0
+    )
+    track = TrackAnalysis(
+        bpm=beat.bpm,
+        first_beat_s=first_beat,
+        duration_s=beat.duration_s,
+        engine="ml",
+        beats=beat.beats,
+        downbeats=beat.downbeats,
+        segments=list(structure.segments),
+        djay_bpm=known_bpm,
+    )
+    return track, prop

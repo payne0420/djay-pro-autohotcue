@@ -11,24 +11,33 @@ into **djay Pro**'s library database. It analyzes audio structure directly
 (any `ffmpeg`-decodable format, including `.opus`/`.ogg`), so it does not depend
 on another DJ app's analysis.
 
-Pure-Python, single package, no service. Pipeline: decode audio → lock a
-beatgrid → detect structure (drop/breakdown/buildup/outro) → write an 8-cue
-layout into djay's `MediaLibrary.db`.
+Pure-Python, single package, no service. Default pipeline: decode audio →
+**beat_this** beat/downbeat tracking → librosa Laplacian structure segmentation
+→ pure cue policy → write an 8-cue layout into djay's `MediaLibrary.db`. A
+legacy band-energy engine remains behind `--engine legacy`.
 
 ```
 src/autohotcue/
     tsaf.py      # parser + serializer for djay's undocumented "TSAF" blob format
     djaydb.py    # MediaLibrary.db (SQLite/YapDatabase) reader/writer, backups, cue builder
-    analysis.py  # ffmpeg decode, beatgrid lock, band-energy structure detection
-    viz.py       # waveform + cue-map PNG
-    cli.py       # propose / viz / apply / verify
+    backends.py  # beat_this beat tracking + librosa structure segmentation
+    cuepolicy.py # pure cue-placement policy (no audio, no I/O)
+    analysis.py  # decode, analyze() dispatcher, legacy grid path
+    bench.py     # ground-truth eval harness (hit-rate, MAE, runtime)
+    viz.py       # waveform + segment spans + downbeat ticks + cue-map PNG
+    cli.py       # propose / viz / apply / verify / bench
 tests/
-    test_tsaf.py # byte-exact round-trip of the whole real library + edge cases
+    test_tsaf.py     # byte-exact round-trip of the whole real library + edge cases
+    test_cuepolicy.py
+    test_backends.py
+    test_bench.py
+    test_e2e.py      # real-track integration (skipped when paths missing)
 ```
 
 Key tech: Python 3.13 (pinned; `requires-python >=3.11`), [uv](https://docs.astral.sh/uv/)
-for env/deps, numpy + librosa + soundfile + matplotlib, and the external
-`ffmpeg` binary (must be on `PATH`).
+for env/deps, numpy + librosa + soundfile + matplotlib + **PyTorch** (via
+`beat-this`), and the external `ffmpeg` binary (must be on `PATH`). First run
+downloads beat_this model checkpoints (one-time network).
 
 ## Setup commands
 
@@ -41,13 +50,18 @@ for env/deps, numpy + librosa + soundfile + matplotlib, and the external
 Run the CLI through uv (no manual venv activation needed):
 
 ```bash
-uv run autohotcue propose "/path/to/track.opus"     # analyze + print cues, no writes
-uv run autohotcue viz "/path/to/track.opus" map.png # waveform + cue-map PNG
-uv run autohotcue verify "/path/to/track.opus"      # read back cues djay has stored
-uv run autohotcue apply "/path/to/track.opus"       # WRITE cues into djay's DB
+uv run autohotcue propose "/path/to/track.opus"              # ml engine (default)
+uv run autohotcue propose "/path/to/track.opus" --engine legacy
+uv run autohotcue viz "/path/to/track.opus" map.png          # segments + downbeat ticks
+uv run autohotcue verify "/path/to/track.opus"               # read back cues djay has stored
+uv run autohotcue apply "/path/to/track.opus"                # WRITE cues into djay's DB
+uv run autohotcue bench truth.json --engines ml,legacy -j 4    # score vs hand labels
 ```
 
-`apply` reuses djay's analyzed BPM automatically; override with `--bpm`.
+`--engine {ml,legacy}` selects the analysis backend (default `ml`). Under `ml`,
+djay's BPM is cross-checked only (note when >2% octave-normalized deviation);
+placement uses tracked beats/downbeats. `apply` still writes absolute seconds.
+
 Use `--library <path>` to target a copy of the DB (do this when testing writes).
 
 `propose`, `apply` and `verify` also accept a **folder** (scanned recursively
@@ -57,6 +71,15 @@ reports per-track skips/failures plus a summary instead of aborting.
 core); the database is only ever touched from the main thread — keep it that
 way if you change the parallel path.
 
+### Parallelism rules
+
+- `ProcessPoolExecutor` workers use `initializer=backends.init_worker` to cap
+  torch threads per worker.
+- Workers always run models on **cpu**; **mps** is used only when effective
+  jobs == 1 (single-threaded analysis).
+- One lazy model singleton per worker process (macOS spawn reloads each worker).
+- Database writes stay on the main thread only.
+
 ## Testing instructions
 
 - Run everything: `uv run pytest` (config pins `testpaths = ["tests"]`).
@@ -65,6 +88,7 @@ way if you change the parallel path.
   every blob** in the local djay library and asserts byte-for-byte equality. It
   **skips** automatically when no djay library is present (e.g. CI) — the
   synthetic tests still run. If you have djay installed, this test must pass.
+- `tests/test_e2e.py` runs against real tracks when present on the machine.
 - Add or update tests for any change to `tsaf.py` or `djaydb.py`.
 
 ## The non-negotiable safety invariant

@@ -20,26 +20,30 @@ format directly.
 ## How it works
 
 1. **Decode** the track to PCM via ffmpeg (handles opus/ogg/flac/m4a/…).
-2. **Lock a beatgrid** to djay's analyzed BPM (phase + first downbeat found
-   from the onset envelope and low-band kick energy).
-3. **Find structure** from per-bar band-split energy: the drop (bass returns
-   after a buildup), the buildup (bass cuts out), the breakdown (sustained
-   bass dropout), the second drop, and the outro. Everything snaps to phrase
-   boundaries on the grid.
-4. **Write cues** into djay's `mediaItemUserData` record as `ADCCuePoint`
+2. **Track beats and downbeats** with [beat_this](https://github.com/CPJKU/beat_this)
+   (ISMIR 2024; default `ml` engine). Cue A lands on the first tracked downbeat.
+3. **Segment structure** via librosa Laplacian spectral clustering on
+   beat-synchronous features; segments are labeled by per-track relative energy.
+4. **Place cues** with a pure policy (`cuepolicy.py`) that maps structure →
+   the 8-cue layout. Every cue snaps to a tracked downbeat. djay's BPM is
+   cross-checked only (never used for placement under `ml`).
+5. **Write cues** into djay's `mediaItemUserData` record as `ADCCuePoint`
    objects, serialized in djay's own **TSAF** binary format.
+
+The legacy `--engine legacy` path keeps the original band-energy grid analysis
+for comparison.
 
 ### The cue layout
 
 | Pad | Cue            | Anchored on |
 |-----|----------------|-------------|
-| A   | First Beat     | grid anchor |
-| B   | Loop In        | grid anchor |
-| C   | Vocal / Buildup| bass cuts out before the drop |
-| D   | Drop           | bass returns / first sustained energy peak |
-| E   | Breakdown      | sustained bass dropout after the drop |
-| F   | Special        | energy recovery / second drop |
-| G   | Outro          | energy tail begins |
+| A   | First Beat     | first tracked downbeat |
+| B   | Loop In        | end of intro |
+| C   | Vocal / Buildup| segment before drop |
+| D   | Drop           | first high-energy section |
+| E   | Breakdown      | first low-energy section after drop |
+| F   | Special        | second high-energy section |
+| G   | Outro          | outro segment (≥8 beats of audio remain) |
 | H   | Loop Out       | outro start |
 
 ## The TSAF format
@@ -55,6 +59,7 @@ enforces it.
 ## Usage
 
 Requires Python 3.11+, [uv](https://docs.astral.sh/uv/), and `ffmpeg`.
+First run downloads beat_this model checkpoints (one-time network).
 
 ```bash
 uv sync
@@ -62,7 +67,10 @@ uv sync
 # Analyze and print proposed cues (no writes, no djay needed)
 uv run autohotcue propose "/path/to/track.opus"
 
-# Render a waveform + cue map PNG
+# Legacy band-energy engine (pre-overhaul behavior)
+uv run autohotcue propose "/path/to/track.opus" --engine legacy
+
+# Render a waveform + segment spans + downbeat ticks + cue map PNG
 uv run autohotcue viz "/path/to/track.opus" cuemap.png
 
 # Write cues into djay's library (QUIT djay first)
@@ -71,17 +79,37 @@ uv run autohotcue apply "/path/to/track.opus"
 # Read back what djay has stored for a track
 uv run autohotcue verify "/path/to/track.opus"
 
+# Score engines against hand-labeled ground truth
+uv run autohotcue bench truth.json --engines ml,legacy -j 4
+
 # Point propose/apply/verify at a folder to process every audio file in it
 # (recursive). A folder apply takes ONE backup for the whole run and skips
 # problem tracks (not in djay, already has cues, ...) with a summary.
 # -j N analyzes N tracks in parallel (-j 0 = one worker per CPU core);
 # database writes always stay serialized on the main thread.
+# Parallel workers use cpu only; mps is used when -j 1.
 uv run autohotcue apply "/path/to/Afro House/" -j 4
 ```
 
 The track must already be in djay's **My Collection** (so the library has a
-record to attach cues to). `apply` reuses djay's analyzed BPM automatically;
-pass `--bpm` to override.
+record to attach cues to). `apply` reuses djay's analyzed BPM for cross-check
+and legacy placement; pass `--bpm` to override.
+
+### Bench ground truth
+
+Hand-label tracks in JSON:
+
+```json
+{
+  "tracks": [
+    {"path": "/path/to/track.opus", "cues": {"A": 0.512, "D": 92.31, "G": 180.0}}
+  ]
+}
+```
+
+Partial slots are fine. `bench` reports per-slot hit-rate (±1 beat, ±1 bar),
+MAE, and runtime per engine using the same BPM yardstick (djay BPM when
+`--library` is given, else tracked).
 
 ## Safety
 
@@ -114,11 +142,15 @@ pass `--bpm` to override.
 src/autohotcue/
     tsaf.py      # TSAF binary parser + serializer (byte-exact round-trip)
     djaydb.py    # MediaLibrary.db reader/writer, backup, cue record builder
-    analysis.py  # ffmpeg decode, beatgrid lock, structure detection
-    viz.py       # waveform + cue-map PNG
-    cli.py       # propose / viz / apply / verify
+    backends.py  # beat_this + librosa structure segmentation
+    cuepolicy.py # pure cue-placement policy
+    analysis.py  # decode, analyze() dispatcher, legacy path
+    bench.py     # ground-truth eval harness
+    viz.py       # waveform + segment spans + cue-map PNG
+    cli.py       # propose / viz / apply / verify / bench
 tests/
     test_tsaf.py # round-trips the entire real library
+    test_e2e.py  # real-track integration tests
 ```
 
 ## Status
