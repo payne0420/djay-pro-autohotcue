@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local clone for allin1 investigation — never commit
+all-in-one-mlx/
