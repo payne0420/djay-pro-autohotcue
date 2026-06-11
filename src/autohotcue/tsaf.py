@@ -26,6 +26,7 @@ Tags:
     0x0d  bool true
     0x0e  bool false
     0x0f  integer, inline u8 payload
+    0x10  integer, u16 payload, 2-aligned
     0x11  integer, u32 payload, 4-aligned
     0x13  float32, 4-aligned
     0x15  data: u32 length (4-aligned) + raw bytes + zero padding to a
@@ -43,7 +44,7 @@ Field order within an object is value first, then field name. The name is
 optional: if the token after a value is not a string token, the field is
 anonymous. The header container count tallies objects, arrays, sets, NSDate
 (f64) and NSData values; URLs, strings and primitive scalars do not count.
-Verified exact across an entire real library (11,301 blobs).
+Verified exact across an entire real library (38,385 blobs).
 """
 from __future__ import annotations
 
@@ -63,6 +64,7 @@ TAG_ARRAY_C = 0x0C
 TAG_TRUE = 0x0D
 TAG_FALSE = 0x0E
 TAG_INT8 = 0x0F
+TAG_INT16 = 0x10
 TAG_INT32 = 0x11
 TAG_F32 = 0x13
 TAG_DATA = 0x15
@@ -156,7 +158,7 @@ class F64:
 
 @dataclass
 class Int:
-    tag: int  # TAG_INT8, TAG_INT8_V2 or TAG_INT32
+    tag: int  # TAG_INT8, TAG_INT8_V2, TAG_INT16 or TAG_INT32
     value: int
 
     def __repr__(self):
@@ -277,6 +279,9 @@ class _Reader:
             return F64(self.raw(8))
         if tag in (TAG_INT8, TAG_INT8_V2):
             return Int(tag, self.u8())
+        if tag == TAG_INT16:
+            self.align(2)
+            return Int(tag, self.u16())
         if tag == TAG_INT32:
             self.align(4)
             return Int(tag, self.u32())
@@ -342,6 +347,9 @@ class _Writer:
     def u8(self, v: int):
         self.out.append(v)
 
+    def u16(self, v: int):
+        self.out += struct.pack("<H", v)
+
     def u32(self, v: int):
         self.out += struct.pack("<I", v)
 
@@ -387,6 +395,9 @@ class _Writer:
             if node.tag == TAG_INT32:
                 self.align(4)
                 self.u32(node.value)
+            elif node.tag == TAG_INT16:
+                self.align(2)
+                self.u16(node.value)
             else:
                 self.u8(node.value)
         elif isinstance(node, Data):

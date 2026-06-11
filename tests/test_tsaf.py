@@ -53,6 +53,22 @@ def test_build_user_data_is_wellformed():
     assert cps.items[0].get("endTime").value == -1.0
 
 
+def test_int16_roundtrip_both_parities():
+    """Tag 0x10 (u16, 2-aligned) — djay writes it for ``year`` in mediaItems.
+
+    Vary the preceding string length so the u16 payload starts once on an odd
+    offset (forcing a pad byte) and once on an even one; both must be stable.
+    """
+    for name in ("a", "ab"):
+        obj = tsaf.Obj("X")
+        obj.fields = [(name, tsaf.Int(tsaf.TAG_INT16, 2026))]
+        blob = tsaf.serialize(tsaf.Document((3, 3), obj))
+        rt = tsaf.parse(blob)
+        assert tsaf.serialize(rt) == blob
+        got = rt.root.get(name)
+        assert got.tag == tsaf.TAG_INT16 and got.value == 2026
+
+
 def test_cue_number_encoding():
     assert isinstance(djaydb.cue_number_value(0), tsaf.Marker)
     assert isinstance(djaydb.cue_number_value(1), tsaf.Marker)
