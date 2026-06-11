@@ -191,23 +191,25 @@ def cmd_apply(args):
 
     written = skipped = failed = 0
     try:
-        for path in paths:
+        for i, path in enumerate(paths, 1):
             name = Path(path).name
+            if batch:
+                print(f"[{i}/{len(paths)}] {name}", flush=True)
             try:
                 n = _apply_one(db, path, args, ensure_backup)
             except _Skip as e:
                 if not batch:
                     raise SystemExit(str(e)) from None
-                print(f"skip   {name}: {e}")
+                print(f"  skip: {e}")
                 skipped += 1
                 continue
             except Exception as e:
                 if not batch:
                     raise
-                print(f"FAILED {name}: {e}")
+                print(f"  FAILED: {e}")
                 failed += 1
                 continue
-            print(f"wrote {n} cues to {name}")
+            print(f"  wrote {n} cues" if batch else f"wrote {n} cues to {name}")
             written += 1
         if batch:
             print(f"\n{written} written, {skipped} skipped, {failed} failed ({len(paths)} files)")
