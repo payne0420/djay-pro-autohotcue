@@ -206,6 +206,7 @@ def run_engine(
     result = EngineResult(engine=engine)
     runnable = [gt for gt in tracks if Path(gt.path).is_file()]
 
+    jobs = analysis.effective_parallel_jobs(engine, jobs)
     if jobs > 1 and len(runnable) > 1:
         import concurrent.futures
 

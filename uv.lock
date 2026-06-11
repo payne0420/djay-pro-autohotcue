@@ -153,7 +153,6 @@ allin1 = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "autohotcue", extra = ["allin1"] },
     { name = "pytest" },
 ]
 
@@ -173,10 +172,7 @@ requires-dist = [
 provides-extras = ["allin1"]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "autohotcue", extras = ["allin1"] },
-    { name = "pytest", specifier = ">=9.0.3" },
-]
+dev = [{ name = "pytest", specifier = ">=9.0.3" }]
 
 [[package]]
 name = "beat-this"

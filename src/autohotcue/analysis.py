@@ -292,6 +292,14 @@ def normalize_engine(engine: str) -> tuple[str, str | None]:
     return engine, "librosa"
 
 
+def effective_parallel_jobs(engine: str, jobs: int) -> int:
+    """ml-allin1 loads heavyweight MLX/demucs models; never fan out across workers."""
+    _, structure_backend = normalize_engine(engine)
+    if structure_backend == "allin1":
+        return 1
+    return jobs
+
+
 def _resolve_device(device: str | None, jobs: int = 1) -> str:
     """Workers always cpu; mps only when effective jobs == 1."""
     if jobs > 1:

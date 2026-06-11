@@ -162,9 +162,19 @@ def _map_allin1_segments(result, duration_s: float) -> list[Segment]:
         if label in _SKIP_LABELS:
             continue
         if label not in ALLIN1_LABELS:
-            label = "verse"
-        start = max(0.0, float(seg.start))
-        end = min(duration_s, float(seg.end))
+            raise ValueError(
+                f"unknown all-in-one segment label {seg.label!r} "
+                f"(expected one of {sorted(ALLIN1_LABELS)})"
+            )
+        start = float(seg.start)
+        end = float(seg.end)
+        if not (np.isfinite(start) and np.isfinite(end)):
+            raise ValueError(
+                f"non-finite segment boundary for {seg.label!r}: "
+                f"start={seg.start!r}, end={seg.end!r}"
+            )
+        start = max(0.0, start)
+        end = min(duration_s, end)
         if end > start:
             segments.append(Segment(start=start, end=end, label=label))
     return segments

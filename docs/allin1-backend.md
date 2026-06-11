@@ -22,7 +22,7 @@ accepts the kwarg but is ~3× slower).
 ## Prerequisites
 
 - macOS Apple Silicon (MLX)
-- `uv sync --extra allin1` (or dev group: `uv sync` which pulls `autohotcue[allin1]`)
+- `uv sync --extra allin1`
 - MLX weights for harmonix-fold0 in one of:
   - `$ALLIN1_MLX_WEIGHTS_DIR`
   - `~/.cache/autohotcue/mlx-weights/` (auto-populated from clone on first use)

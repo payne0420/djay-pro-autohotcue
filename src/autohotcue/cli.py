@@ -100,7 +100,7 @@ def _print_proposal(track: analysis.TrackAnalysis, prop: analysis.CueProposal) -
 def cmd_propose(args):
     paths = _expand_paths(args.path)
     batch = Path(args.path).is_dir()
-    jobs = _resolve_jobs(args.jobs)
+    jobs = analysis.effective_parallel_jobs(args.engine, _resolve_jobs(args.jobs))
     failed = 0
     if batch and jobs > 1 and len(paths) > 1:
         with concurrent.futures.ProcessPoolExecutor(
@@ -297,7 +297,7 @@ def cmd_apply(args):
         raise SystemExit("djay Pro is running — quit it first (it must not hold the DB open)")
     paths = _expand_paths(args.path)
     batch = Path(args.path).is_dir()
-    jobs = _resolve_jobs(args.jobs)
+    jobs = analysis.effective_parallel_jobs(args.engine, _resolve_jobs(args.jobs))
     db = djaydb.DjayDB(args.library) if args.library else djaydb.DjayDB()
 
     backup_dir = args.backup_dir or (Path.home() / "Music/djay/Backups/autohotcue")
