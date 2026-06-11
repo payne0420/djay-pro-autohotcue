@@ -141,7 +141,7 @@ Green & Blue / Kelsier duration ratio = 1.79x. Measured ratios at cap 6:
 demucs 1.7-1.8x, nn 1.8x, DBN 1.9x, spectrogram (warm) 1.2x. No nonlinearity.
 The old 4.5x blowup (57s → 260s) was memory pressure, not scaling.
 
-## Applied fixes (commit below)
+## Applied fixes (commit `c3a6b63e9ee7e7f28ffd14ee5ba69290e8bf2f00`)
 
 1. `_AllInOneForwardWrapper.state` property — fixes the `compile_forward=True`
    crash so the compile path is testable; default stays `False` (measured: no
