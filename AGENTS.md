@@ -13,14 +13,17 @@ on another DJ app's analysis.
 
 Pure-Python, single package, no service. Default pipeline: decode audio →
 **beat_this** beat/downbeat tracking → librosa Laplacian structure segmentation
-→ pure cue policy → write an 8-cue layout into djay's `MediaLibrary.db`. A
-legacy band-energy engine remains behind `--engine legacy`.
+→ pure cue policy → write an 8-cue layout into djay's `MediaLibrary.db`. Optional
+`--engine ml-allin1` swaps structure for **all-in-one-mlx** (Apple Silicon;
+`uv sync --extra allin1`). A legacy band-energy engine remains behind
+`--engine legacy`.
 
 ```
 src/autohotcue/
     tsaf.py      # parser + serializer for djay's undocumented "TSAF" blob format
     djaydb.py    # MediaLibrary.db (SQLite/YapDatabase) reader/writer, backups, cue builder
-    backends.py  # beat_this beat tracking + librosa structure segmentation
+    backends.py  # beat_this + librosa / allin1 structure backends
+    _allin1.py   # optional all-in-one-mlx structure (ml-allin1 engine)
     cuepolicy.py # pure cue-placement policy (no audio, no I/O)
     analysis.py  # decode, analyze() dispatcher, legacy grid path
     bench.py     # ground-truth eval harness (hit-rate, MAE, runtime)
@@ -51,16 +54,18 @@ Run the CLI through uv (no manual venv activation needed):
 
 ```bash
 uv run autohotcue propose "/path/to/track.opus"              # ml engine (default)
+uv run autohotcue propose "/path/to/track.opus" --engine ml-allin1  # all-in-one structure
 uv run autohotcue propose "/path/to/track.opus" --engine legacy
 uv run autohotcue viz "/path/to/track.opus" map.png          # segments + downbeat ticks
 uv run autohotcue verify "/path/to/track.opus"               # read back cues djay has stored
 uv run autohotcue apply "/path/to/track.opus"                # WRITE cues into djay's DB
-uv run autohotcue bench truth.json --engines ml,legacy -j 4    # score vs hand labels
+uv run autohotcue bench truth.json --engines ml,ml-allin1,legacy -j 4
 ```
 
-`--engine {ml,legacy}` selects the analysis backend (default `ml`). Under `ml`,
-djay's BPM is cross-checked only (note when >2% octave-normalized deviation);
-placement uses tracked beats/downbeats. `apply` still writes absolute seconds.
+`--engine {ml,ml-librosa,ml-allin1,legacy}` (default `ml`). `ml` / `ml-librosa` use
+librosa Laplacian structure; `ml-allin1` uses all-in-one-mlx (optional extra;
+see `docs/allin1-backend.md`). djay's BPM is cross-checked only under ml engines;
+placement uses beat_this downbeats. `apply` still writes absolute seconds.
 
 Use `--library <path>` to target a copy of the DB (do this when testing writes).
 

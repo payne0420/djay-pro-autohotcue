@@ -276,6 +276,22 @@ def propose_cues_legacy(
     return grid, p
 
 
+VALID_ENGINES = frozenset({"ml", "ml-librosa", "ml-allin1", "legacy"})
+
+
+def normalize_engine(engine: str) -> tuple[str, str | None]:
+    """Map CLI engine name to (track.engine label, structure_backend or None)."""
+    if engine not in VALID_ENGINES:
+        raise ValueError(
+            f"unknown engine {engine!r} (choose from {', '.join(sorted(VALID_ENGINES))})"
+        )
+    if engine == "legacy":
+        return "legacy", None
+    if engine == "ml-allin1":
+        return "ml-allin1", "allin1"
+    return engine, "librosa"
+
+
 def _resolve_device(device: str | None, jobs: int = 1) -> str:
     """Workers always cpu; mps only when effective jobs == 1."""
     if jobs > 1:
@@ -300,7 +316,8 @@ def analyze(
     jobs: int = 1,
 ) -> tuple[TrackAnalysis, CueProposal]:
     """Analyze a track and propose cues via the ml or legacy engine."""
-    if engine == "legacy":
+    track_engine, structure_backend = normalize_engine(engine)
+    if track_engine == "legacy":
         bpm = known_bpm or 120.0
         grid, prop = propose_cues_legacy(path, bpm)
         track = TrackAnalysis(
@@ -318,7 +335,9 @@ def analyze(
     dev = _resolve_device(device, jobs)
     y = decode(path)
     beat = track_beats(y, device=dev)
-    structure = segment_structure(path, y, SR, beat)
+    structure = segment_structure(
+        path, y, SR, beat, structure_backend=structure_backend or "librosa"
+    )
     prop = policy_propose(beat, structure, djay_bpm=known_bpm)
 
     first_beat = float(beat.downbeats[0]) if len(beat.downbeats) else (
@@ -328,7 +347,7 @@ def analyze(
         bpm=beat.bpm,
         first_beat_s=first_beat,
         duration_s=beat.duration_s,
-        engine="ml",
+        engine=track_engine,
         beats=beat.beats,
         downbeats=beat.downbeats,
         segments=list(structure.segments),

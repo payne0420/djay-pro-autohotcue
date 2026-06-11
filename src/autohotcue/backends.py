@@ -171,6 +171,23 @@ def segment_structure(
     y: np.ndarray,
     sr: int,
     beat: BeatAnalysis,
+    structure_backend: str = "librosa",
+) -> StructureAnalysis:
+    """Beat-synchronous structure: librosa Laplacian (default) or all-in-one-mlx."""
+    if structure_backend == "allin1":
+        from autohotcue._allin1 import segment_structure_allin1
+
+        return segment_structure_allin1(path, y, sr, beat)
+    if structure_backend not in ("librosa", "ml"):
+        raise ValueError(f"unknown structure backend: {structure_backend}")
+    return segment_structure_librosa(path, y, sr, beat)
+
+
+def segment_structure_librosa(
+    path: str,
+    y: np.ndarray,
+    sr: int,
+    beat: BeatAnalysis,
 ) -> StructureAnalysis:
     """Laplacian spectral clustering on beat-synchronous features (McFee–Ellis)."""
     del path  # ffmpeg-decoded array is the input; path kept for API stability

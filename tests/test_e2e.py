@@ -59,6 +59,20 @@ def _check_ordering(pos: dict[str, float]) -> None:
         assert pos["G"] == pos["H"]
 
 
+def _allin1_prereqs() -> bool:
+    from pathlib import Path as P
+
+    if P("all-in-one-mlx/mlx-weights/harmonix-fold0_mlx.npz").is_file():
+        return True
+    try:
+        from autohotcue._allin1 import resolve_weights_dir
+
+        resolve_weights_dir()
+        return True
+    except Exception:
+        return False
+
+
 @pytest.mark.parametrize("track_path", E2E_TRACKS)
 def test_ml_analyze_real_track(track_path: str):
     if not Path(track_path).is_file():
@@ -72,6 +86,36 @@ def test_ml_analyze_real_track(track_path: str):
     assert track.engine == "ml"
     assert track.downbeats is not None and len(track.downbeats) > 0
     assert track.beats is not None and len(track.beats) > 0
+
+    for letter, t in prop.positions.items():
+        assert _on_downbeat(t, track.downbeats), (
+            f"{letter}={t:.3f}s not on a tracked downbeat"
+        )
+
+    _check_ordering(prop.positions)
+
+    if "A" in prop.positions:
+        assert prop.positions["A"] <= track.duration_s * 0.25
+
+    if "G" in prop.positions:
+        assert _beats_after(prop.positions["G"], track.beats) >= 8
+
+
+@pytest.mark.parametrize("track_path", E2E_TRACKS)
+@pytest.mark.skipif(not _allin1_prereqs(), reason="ml-allin1 prerequisites missing")
+def test_ml_allin1_analyze_real_track(track_path: str):
+    if not Path(track_path).is_file():
+        pytest.skip(f"missing track: {track_path}")
+
+    t0 = time.perf_counter()
+    track, prop = analysis.analyze(track_path, engine="ml-allin1", jobs=1)
+    elapsed = time.perf_counter() - t0
+    print(f"\n{Path(track_path).name}: ml-allin1 analyze() {elapsed:.1f}s")
+
+    assert track.engine == "ml-allin1"
+    assert track.downbeats is not None and len(track.downbeats) > 0
+    assert track.beats is not None and len(track.beats) > 0
+    assert track.segments is not None and len(track.segments) > 0
 
     for letter, t in prop.positions.items():
         assert _on_downbeat(t, track.downbeats), (

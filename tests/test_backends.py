@@ -80,7 +80,7 @@ def test_energy_rank_ties_are_uniform() -> None:
 
 
 def test_segment_structure_empty_beats() -> None:
-    from autohotcue.backends import BeatAnalysis, segment_structure
+    from autohotcue.backends import BeatAnalysis, segment_structure_librosa
 
     beat = BeatAnalysis(
         bpm=120.0,
@@ -90,6 +90,6 @@ def test_segment_structure_empty_beats() -> None:
         source="test",
     )
     y = np.zeros(44100, dtype=np.float32)
-    out = segment_structure("dummy.opus", y, 44100, beat)
+    out = segment_structure_librosa("dummy.opus", y, 44100, beat)
     assert out.segments == []
     assert out.source == "librosa"

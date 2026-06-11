@@ -22,8 +22,10 @@ format directly.
 1. **Decode** the track to PCM via ffmpeg (handles opus/ogg/flac/m4a/…).
 2. **Track beats and downbeats** with [beat_this](https://github.com/CPJKU/beat_this)
    (ISMIR 2024; default `ml` engine). Cue A lands on the first tracked downbeat.
-3. **Segment structure** via librosa Laplacian spectral clustering on
-   beat-synchronous features; segments are labeled by per-track relative energy.
+3. **Segment structure** via librosa Laplacian spectral clustering (default `ml`
+   engine) or optional **all-in-one-mlx** (`--engine ml-allin1`, Apple Silicon;
+   `uv sync --extra allin1`). Segments carry functional labels; energy rank is
+   computed per-track for cue-policy fallbacks.
 4. **Place cues** with a pure policy (`cuepolicy.py`) that maps structure →
    the 8-cue layout. Every cue snaps to a tracked downbeat. djay's BPM is
    cross-checked only (never used for placement under `ml`).
@@ -66,6 +68,10 @@ uv sync
 
 # Analyze and print proposed cues (no writes, no djay needed)
 uv run autohotcue propose "/path/to/track.opus"
+
+# Optional all-in-one-mlx structure (Apple Silicon; see docs/allin1-backend.md)
+uv sync --extra allin1
+uv run autohotcue propose "/path/to/track.opus" --engine ml-allin1
 
 # Legacy band-energy engine (pre-overhaul behavior)
 uv run autohotcue propose "/path/to/track.opus" --engine legacy

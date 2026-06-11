@@ -8,7 +8,7 @@ from pathlib import Path
 
 from autohotcue import analysis
 
-VALID_ENGINES = frozenset({"ml", "legacy"})
+VALID_ENGINES = frozenset({"ml", "ml-librosa", "ml-allin1", "legacy"})
 
 
 @dataclass
