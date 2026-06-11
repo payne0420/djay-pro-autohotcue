@@ -109,9 +109,11 @@ def test_repeat_of_high_index_string_fails_loudly():
         tsaf.serialize(tsaf.Document((3, 3), obj))
 
 
-def _location_db(tmp_path, entries):
-    """Build a throwaway library DB with localMediaItemLocations records."""
+def _location_db(tmp_path, entries, title_keys=()):
+    """Build a throwaway library DB with localMediaItemLocations records,
+    plus a minimal titleID record for each key in ``title_keys``."""
     db_path = tmp_path / "MediaLibrary.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.execute(
         'CREATE TABLE "database2" (rowid INTEGER PRIMARY KEY, collection CHAR, '
@@ -124,6 +126,11 @@ def _location_db(tmp_path, entries):
         o.fields = [("uuid", key), ("sourceURIs", tsaf.Arr(tsaf.TAG_ARRAY_B, [tsaf.Url(url)]))]
         conn.execute("INSERT INTO database2 (collection,key,data) VALUES (?,?,?)",
                      ("localMediaItemLocations", key, tsaf.serialize(tsaf.Document((3, 3), o))))
+    for key in title_keys:
+        o = tsaf.Obj("ADCMediaItemTitleID")
+        o.fields = [("uuid", key), ("title", key)]
+        conn.execute("INSERT INTO database2 (collection,key,data) VALUES (?,?,?)",
+                     ("mediaItemTitleIDs", key, tsaf.serialize(tsaf.Document((3, 3), o))))
     conn.commit()
     conn.close()
     return db_path
@@ -159,11 +166,24 @@ def test_find_track_encoded_and_unicode(tmp_path):
     db.close()
 
 
-def test_find_track_refuses_ambiguous(tmp_path):
+def test_find_track_ignores_phantom_duplicate(tmp_path):
+    """A leftover location record with no other metadata must lose to the one
+    real catalog entry (the key that has a titleID record)."""
     db = djaydb.DjayDB(_location_db(tmp_path, [
-        ("one", "file:///m/dup.opus"),
-        ("two", "file:///m/dup.opus"),
-    ]))
-    with pytest.raises(ValueError, match="ambiguous"):
-        db.find_track_by_path("/m/dup.opus")
+        ("real", "file:///m/dup.opus"),
+        ("phantom", "file:///m/dup.opus"),
+    ], title_keys=["real"]))
+    assert db.find_track_by_path("/m/dup.opus") == "real"
     db.close()
+
+
+def test_find_track_refuses_ambiguous(tmp_path):
+    """Two entries that are both real (or both phantom) stay ambiguous."""
+    for titled in ([], ["one", "two"]):
+        db = djaydb.DjayDB(_location_db(tmp_path / str(len(titled)), [
+            ("one", "file:///m/dup.opus"),
+            ("two", "file:///m/dup.opus"),
+        ], title_keys=titled))
+        with pytest.raises(ValueError, match="ambiguous"):
+            db.find_track_by_path("/m/dup.opus")
+        db.close()

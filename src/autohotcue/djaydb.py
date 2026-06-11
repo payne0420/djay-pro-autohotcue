@@ -184,6 +184,13 @@ class DjayDB:
         for variant in _path_variants(file_path):
             matches |= self._path_index.get(variant, set())
         if len(matches) > 1:
+            # djay can leave phantom location records behind (a location with
+            # no other metadata). A real catalog entry has a titleID record —
+            # if exactly one match does, the file is unambiguous after all.
+            real = {k for k in matches if self.get_raw("mediaItemTitleIDs", k) is not None}
+            if len(real) == 1:
+                matches = real
+        if len(matches) > 1:
             raise ValueError(
                 f"ambiguous: {len(matches)} library entries match {file_path}; refusing to guess"
             )

@@ -89,8 +89,9 @@ pass `--bpm` to override.
   and **re-checks immediately before the write** in case djay started during
   the (slow) audio analysis.
 - **Exact track matching** — the track is matched by its full `file://` source
-  URL, and an ambiguous match (more than one library entry) is refused rather
-  than guessed, so cues never land on the wrong track.
+  URL. Phantom duplicates (a leftover location record with no other metadata)
+  are ignored in favor of the real catalog entry; a genuinely ambiguous match
+  is refused rather than guessed, so cues never land on the wrong track.
 - **Faithful-edit guard** — before modifying an existing record, the original
   blob must re-serialize byte-for-byte; if autohotcue can't reproduce it
   exactly it refuses, so it can never corrupt the record's other fields.

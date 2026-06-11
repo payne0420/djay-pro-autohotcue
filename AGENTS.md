@@ -86,7 +86,8 @@ Other write-path rules already enforced — keep them:
 - Every `apply` run takes a **unique, timestamped backup** of the DB
   (+ `-wal`/`-shm`) before its first write (one backup per folder batch).
 - Track lookup matches the **exact** `file://` source URL and refuses ambiguous
-  matches — never write cues to the wrong track.
+  matches (phantom location records without a titleID lose to the real entry) —
+  never write cues to the wrong track.
 
 ## Code style
 
