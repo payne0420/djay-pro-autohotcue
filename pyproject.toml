@@ -3,6 +3,7 @@ name = "autohotcue"
 version = "0.1.0"
 description = "Automatic hot cues for djay Pro — analyzes audio (incl. .opus/.ogg) and writes cues into djay's MediaLibrary.db"
 readme = "README.md"
+license = "MIT"
 authors = [
     { name = "payne0420", email = "payne0420@users.noreply.github.com" }
 ]
