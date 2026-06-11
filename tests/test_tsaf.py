@@ -109,35 +109,61 @@ def test_repeat_of_high_index_string_fails_loudly():
         tsaf.serialize(tsaf.Document((3, 3), obj))
 
 
-def test_find_track_requires_exact_path():
-    """A basename that is a substring of another track's path must not match;
-    only the exact source URL counts."""
-    import os
-    import tempfile
-
-    db_path = Path(tempfile.mkdtemp()) / "MediaLibrary.db"
+def _location_db(tmp_path, entries):
+    """Build a throwaway library DB with localMediaItemLocations records."""
+    db_path = tmp_path / "MediaLibrary.db"
     conn = sqlite3.connect(db_path)
     conn.execute(
         'CREATE TABLE "database2" (rowid INTEGER PRIMARY KEY, collection CHAR, '
         "key CHAR, data BLOB, metadata BLOB)"
     )
-
-    def loc(key, url):
+    # djay's real schema: put()'s ON CONFLICT(collection, key) depends on it
+    conn.execute('CREATE UNIQUE INDEX "true_primary_key" ON "database2" ("collection", "key")')
+    for key, url in entries:
         o = tsaf.Obj("ADCMediaItemLocation")
         o.fields = [("uuid", key), ("sourceURIs", tsaf.Arr(tsaf.TAG_ARRAY_B, [tsaf.Url(url)]))]
-        return tsaf.serialize(tsaf.Document((3, 3), o))
-
-    # "move.opus" is a substring of "remove.opus" — the old basename match
-    # would have hit the wrong row.
-    conn.execute("INSERT INTO database2 (collection,key,data) VALUES (?,?,?)",
-                 ("localMediaItemLocations", "right", loc("right", "file:///m/move.opus")))
-    conn.execute("INSERT INTO database2 (collection,key,data) VALUES (?,?,?)",
-                 ("localMediaItemLocations", "wrong", loc("wrong", "file:///m/remove.opus")))
+        conn.execute("INSERT INTO database2 (collection,key,data) VALUES (?,?,?)",
+                     ("localMediaItemLocations", key, tsaf.serialize(tsaf.Document((3, 3), o))))
     conn.commit()
     conn.close()
+    return db_path
 
-    db = djaydb.DjayDB(db_path)
+
+def test_find_track_requires_exact_path(tmp_path):
+    """A basename that is a substring of another track's path must not match;
+    only the exact source URL counts."""
+    db = djaydb.DjayDB(_location_db(tmp_path, [
+        ("right", "file:///m/move.opus"),
+        ("wrong", "file:///m/remove.opus"),
+    ]))
     assert db.find_track_by_path("/m/move.opus") == "right"
     assert db.find_track_by_path("/m/remove.opus") == "wrong"
     assert db.find_track_by_path("/m/missing.opus") is None
+    db.close()
+
+
+def test_find_track_encoded_and_unicode(tmp_path):
+    """djay stores percent-encoded URLs, and accented names may differ in
+    Unicode normalization (NFC vs NFD) from the query path — both must match."""
+    import unicodedata
+    from urllib.parse import quote
+
+    nfc = "/m/Sub Dir/Natty Lou - Gautiér.opus"           # é as one codepoint
+    nfd = unicodedata.normalize("NFD", nfc)                # é as e + combining accent
+    db = djaydb.DjayDB(_location_db(tmp_path, [
+        ("spaced", "file:///m/" + quote("Sub Dir/Jend - Darling.mp3")),
+        ("accent", "file://" + quote(nfd)),                # stored NFD, queried NFC
+    ]))
+    assert db.find_track_by_path("/m/Sub Dir/Jend - Darling.mp3") == "spaced"
+    assert db.find_track_by_path(nfc) == "accent"
+    db.close()
+
+
+def test_find_track_refuses_ambiguous(tmp_path):
+    db = djaydb.DjayDB(_location_db(tmp_path, [
+        ("one", "file:///m/dup.opus"),
+        ("two", "file:///m/dup.opus"),
+    ]))
+    with pytest.raises(ValueError, match="ambiguous"):
+        db.find_track_by_path("/m/dup.opus")
     db.close()

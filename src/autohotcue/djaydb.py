@@ -10,6 +10,7 @@ import os
 import shutil
 import sqlite3
 import time
+import unicodedata
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -41,15 +42,18 @@ def _file_url_to_path(url: str) -> str | None:
     return unquote(parsed.path)
 
 
-def _same_file(a: str | None, b: str | None) -> bool:
-    if not a or not b:
-        return False
-    if os.path.abspath(a) == os.path.abspath(b):
-        return True
+def _path_variants(path: str) -> set[str]:
+    """Comparable forms of a path: absolute and symlink-resolved, both NFC.
+
+    macOS file systems and djay's stored URLs disagree on Unicode normalization
+    for accented names (NFC vs NFD), so all comparisons go through NFC.
+    """
+    variants = {os.path.abspath(path)}
     try:
-        return os.path.realpath(a) == os.path.realpath(b)
+        variants.add(os.path.realpath(path))
     except OSError:
-        return False
+        pass
+    return {unicodedata.normalize("NFC", v) for v in variants}
 
 
 def build_cue_objects(cues: list[dict]) -> list[tsaf.Obj]:
@@ -85,6 +89,7 @@ class DjayDB:
     def __init__(self, path: Path | str = DEFAULT_LIBRARY):
         self.path = Path(path)
         self.conn = sqlite3.connect(self.path)
+        self._path_index: dict[str, set[str]] | None = None
 
     def close(self):
         self.conn.close()
@@ -141,23 +146,12 @@ class DjayDB:
     def checkpoint(self):
         self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
 
-    def find_track_by_path(self, file_path: str) -> str | None:
-        """Return the unique track key whose stored source URL is this exact file.
-
-        Prefilters cheaply on the filename, then parses each candidate location
-        record and requires an exact absolute-path match against its
-        ``sourceURIs``. Raises ValueError if more than one distinct track
-        matches — better to refuse than to write cues to the wrong track.
-        Returns None if nothing matches.
-        """
-        target = os.path.abspath(file_path)
-        name_hex = Path(file_path).name.encode("utf-8").hex().upper()
+    def _build_path_index(self) -> dict[str, set[str]]:
+        """Map every stored source path (normalized variants) to its track keys."""
+        idx: dict[str, set[str]] = {}
         rows = self.conn.execute(
-            "SELECT key, data FROM database2 WHERE collection='localMediaItemLocations' "
-            "AND instr(hex(data), ?) > 0",
-            (name_hex,),
+            "SELECT key, data FROM database2 WHERE collection='localMediaItemLocations'"
         ).fetchall()
-        matches: set[str] = set()
         for key, data in rows:
             try:
                 doc = tsaf.parse(bytes(data))
@@ -168,11 +162,30 @@ class DjayDB:
                 continue
             for u in uris.items:
                 url = u.value if isinstance(u, tsaf.Url) else (u if isinstance(u, str) else None)
-                if url and _same_file(_file_url_to_path(url), target):
-                    matches.add(key)
+                path = _file_url_to_path(url) if url else None
+                if not path:
+                    continue
+                for variant in _path_variants(path):
+                    idx.setdefault(variant, set()).add(key)
+        return idx
+
+    def find_track_by_path(self, file_path: str) -> str | None:
+        """Return the unique track key whose stored source URL is this exact file.
+
+        Builds a path -> keys index over all location records on first use
+        (per connection) and matches the absolute/resolved, NFC-normalized
+        path exactly. Raises ValueError if more than one distinct track
+        matches — better to refuse than to write cues to the wrong track.
+        Returns None if nothing matches.
+        """
+        if self._path_index is None:
+            self._path_index = self._build_path_index()
+        matches: set[str] = set()
+        for variant in _path_variants(file_path):
+            matches |= self._path_index.get(variant, set())
         if len(matches) > 1:
             raise ValueError(
-                f"ambiguous: {len(matches)} library entries match {target}; refusing to guess"
+                f"ambiguous: {len(matches)} library entries match {file_path}; refusing to guess"
             )
         return next(iter(matches)) if matches else None
 
