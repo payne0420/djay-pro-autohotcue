@@ -56,6 +56,7 @@ class TrackAnalysis:
     downbeats: np.ndarray | None = None
     segments: list | None = None  # list[Segment] when ml engine
     djay_bpm: float | None = None
+    grid_fit: object | None = None  # gridlock.GridFit when ml engine
 
 
 def decode(path: str, sr: int = SR) -> np.ndarray:
@@ -350,6 +351,10 @@ def analyze(
     )
     prop = policy_propose(beat, structure, djay_bpm=known_bpm)
 
+    from autohotcue.gridlock import fit_grid
+
+    grid_fit = fit_grid(y, SR, beat.beats, beat.downbeats, known_bpm)
+
     first_beat = float(beat.downbeats[0]) if len(beat.downbeats) else (
         float(beat.beats[0]) if len(beat.beats) else 0.0
     )
@@ -362,5 +367,6 @@ def analyze(
         downbeats=beat.downbeats,
         segments=list(structure.segments),
         djay_bpm=known_bpm,
+        grid_fit=grid_fit,
     )
     return track, prop

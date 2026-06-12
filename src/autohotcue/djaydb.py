@@ -56,6 +56,18 @@ def _path_variants(path: str) -> set[str]:
     return {unicodedata.normalize("NFC", v) for v in variants}
 
 
+def build_beat_grid_edits(anchor_s: float) -> tsaf.Obj:
+    """Build ``ADCBeatGridEdits`` for djay's manual grid anchor."""
+    obj = tsaf.Obj("ADCBeatGridEdits")
+    obj.fields.append(("firstDownbeatPosition", tsaf.F32.of(anchor_s)))
+    obj.fields.append(("nrOfBeatShift", tsaf.Marker(tsaf.TAG_M2E)))
+    obj.fields.append(("downbeatMarkers", tsaf.Arr(tsaf.TAG_ARRAY_A, [])))
+    obj.fields.append(("firstGridSegmentTempoExponent", tsaf.Marker(tsaf.TAG_M2E)))
+    obj.fields.append(("lastGridSegmentTempoExponent", tsaf.Marker(tsaf.TAG_M2E)))
+    obj.fields.append(("fractionalBeatShift", tsaf.F32.of(0.0)))
+    return obj
+
+
 def build_cue_objects(cues: list[dict]) -> list[tsaf.Obj]:
     """Build ``ADCCuePoint`` objects (sorted by slot) from cue dicts.
 
@@ -73,6 +85,39 @@ def build_cue_objects(cues: list[dict]) -> list[tsaf.Obj]:
         cue.fields.append(("number", cue_number_value(c["number"])))
         objs.append(cue)
     return objs
+
+
+# Obj classnames that may appear inside mediaItemUserData when editing in place.
+# Any other nested Obj uses encodings or field order autohotcue does not reproduce.
+EDIT_SAFE_OBJ_CLASSNAMES = frozenset({
+    "ADCMediaItemUserData",
+    "ADCMediaItemTitleID",
+    "ADCCuePoint",
+    "ADCBeatGridEdits",
+})
+
+UNSAFE_EDIT_SKIP = (
+    "record contains djay analysis objects autohotcue cannot safely edit "
+    "(e.g. audio alignment fingerprint); skipping to protect the library"
+)
+
+
+def _collect_obj_classnames(value: object, found: set[str] | None = None) -> set[str]:
+    if found is None:
+        found = set()
+    if isinstance(value, tsaf.Obj):
+        found.add(value.classname)
+        for _, field_value in value.fields:
+            _collect_obj_classnames(field_value, found)
+    elif isinstance(value, tsaf.Arr):
+        for item in value.items:
+            _collect_obj_classnames(item, found)
+    return found
+
+
+def unsafe_edit_classnames(doc: tsaf.Document) -> set[str]:
+    """Return Obj classnames in ``doc`` outside the safe-to-edit set."""
+    return _collect_obj_classnames(doc.root) - EDIT_SAFE_OBJ_CLASSNAMES
 
 
 def ensure_cloud_key(root: tsaf.Obj, key: str):

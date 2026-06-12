@@ -14,19 +14,38 @@ REAL_LIBRARY = Path(
     "/Users/payne/Music/djay/djay Media Library.djayMediaLibrary/MediaLibrary.db"
 )
 
+TEST_PLAYLIST = Path("/Users/payne/Music/Setlist/zzzzzTEST")
+
 E2E_TRACKS = [
-    "/Users/payne/Music/Setlist/Afro House 2026  Top 100   UNCOMMON/"
-    "Adam Port, Stryv, Keinemusik, Orso, Malachiii - Move (Extended Mix).opus",
-    "/Users/payne/Music/Setlist/Afro House 2026  Top 100   UNCOMMON/"
-    "Adassiya, Greg Herma, Alex Garett - Headlights (Extended Mix).opus",
-    "/Users/payne/Music/Setlist/Deep x Melodic  Anjunadeep/"
-    "Maty Owl - Green & Blue (Extended Mix).opus",
-    "/Users/payne/Music/Setlist/Deep x Melodic  Anjunadeep/O'Flynn - Kelsier.opus",
+    str(TEST_PLAYLIST / "Andrea Oliva, Moeaike, Shimza - I Love You So - Shimza Remix (Extended Mix).opus"),
+    str(TEST_PLAYLIST / "Jan Blomqvist - Maybe Not (Extended Mix).opus"),
+    str(TEST_PLAYLIST / "MIRAMAR - Esplanade (Extended Mix).opus"),
+    str(
+        TEST_PLAYLIST
+        / "Brando, Hugo Cantarra, HUGEL - Look Into My Eyes - HUGEL & Hugo Cantarra Remix (Extended Mix).opus"
+    ),
 ]
+
+FINGERPRINT_TRACK = str(
+    TEST_PLAYLIST
+    / "Adam Port, Stryv, Keinemusik, Orso, Malachiii - Move (Extended Mix).opus"
+)
 
 APPLY_TRACK = E2E_TRACKS[0]
 
 library_exists = REAL_LIBRARY.is_file()
+
+
+def _copy_library_to(dest_dir: Path) -> Path:
+    """Copy the live library into a temp dir for read-only or write e2e tests."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    db_path = dest_dir / "MediaLibrary.db"
+    shutil.copy2(REAL_LIBRARY, db_path)
+    for suffix in ("-wal", "-shm"):
+        src = Path(str(REAL_LIBRARY) + suffix)
+        if src.is_file():
+            shutil.copy2(src, dest_dir / f"MediaLibrary.db{suffix}")
+    return db_path
 
 
 def _on_downbeat(t: float, downbeats: np.ndarray, tol_s: float = 0.015) -> bool:
@@ -201,19 +220,13 @@ def test_ml_songformer_analyze_real_track(monkeypatch):
 @pytest.mark.skipif(not library_exists, reason="real djay library not present")
 @pytest.mark.skipif(not Path(APPLY_TRACK).is_file(), reason="apply e2e track missing")
 def test_apply_verify_roundtrip(tmp_path):
+    """Copy library to tmp_path, apply ml cues, verify readback matches proposal."""
     from autohotcue.cli import _djay_running
 
     if _djay_running():
         pytest.skip("djay Pro is running — quit it before apply e2e")
-    """Copy library to tmp_path, apply ml cues, verify readback matches proposal."""
-    lib_dir = tmp_path / "libcopy"
-    lib_dir.mkdir()
-    db_path = lib_dir / "MediaLibrary.db"
-    shutil.copy2(REAL_LIBRARY, db_path)
-    for suffix in ("-wal", "-shm"):
-        src = Path(str(REAL_LIBRARY) + suffix)
-        if src.is_file():
-            shutil.copy2(src, lib_dir / f"MediaLibrary.db{suffix}")
+
+    db_path = _copy_library_to(tmp_path / "libcopy")
 
     from autohotcue.backends import init_worker
     from autohotcue.cli import _precheck_one, _write_one
@@ -237,9 +250,20 @@ def test_apply_verify_roundtrip(tmp_path):
                 db.backup(tmp_path / "backups")
                 backed["done"] = True
 
-        n = _write_one(db, key, existing, prop, ensure_backup)
+        from autohotcue.gridlock import snap_cues
+
+        n = _write_one(
+            db, key, existing, track, prop, ensure_backup,
+            grid_lock=True, force=True,
+        )
         assert n > 0
         db.checkpoint()
+
+        expected = (
+            snap_cues(prop.positions, track.grid_fit)
+            if track.grid_fit is not None and track.grid_fit.ok
+            else prop.positions
+        )
 
         doc = db.get("mediaItemUserData", key)
         assert doc is not None
@@ -252,10 +276,36 @@ def test_apply_verify_roundtrip(tmp_path):
             letter = chr(65 + idx)
             stored[letter] = float(cp.get("time").value)
 
-        for letter, t in prop.positions.items():
+        for letter, t in expected.items():
             assert letter in stored, f"missing cue {letter} after apply"
             assert stored[letter] == pytest.approx(t, abs=1e-3), (
                 f"{letter}: stored {stored[letter]} != proposed {t}"
             )
+    finally:
+        db.close()
+
+
+@pytest.mark.skipif(not library_exists, reason="real djay library not present")
+@pytest.mark.skipif(
+    not Path(FINGERPRINT_TRACK).is_file(),
+    reason="fingerprint guard e2e track missing",
+)
+def test_apply_skips_fingerprint_user_data(tmp_path):
+    """Real library record with ADCAudioAlignmentFingerprint must skip apply."""
+    from autohotcue.cli import _Skip, _djay_running, _precheck_one
+
+    if _djay_running():
+        pytest.skip("djay Pro is running — quit it before apply e2e")
+
+    db_path = _copy_library_to(tmp_path / "libcopy")
+
+    class Args:
+        bpm = None
+        force = True
+
+    db = djaydb.DjayDB(str(db_path))
+    try:
+        with pytest.raises(_Skip, match="audio alignment fingerprint"):
+            _precheck_one(db, FINGERPRINT_TRACK, Args())
     finally:
         db.close()
