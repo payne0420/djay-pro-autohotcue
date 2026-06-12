@@ -51,6 +51,8 @@ uv run autohotcue bench truth.json --engines ml,ml-allin1,ml-songformer,legacy
 ## Device
 
 Defaults to **CPU** (`AUTOHOTCUE_SONGFORMER_DEVICE` unset).
+`AUTOHOTCUE_SONGFORMER_DEVICE` also applies under bench/e2e runs — `analyze()`'s
+`device` flag only steers beat tracking, same as with ml-allin1.
 
 `AUTOHOTCUE_SONGFORMER_DEVICE=mps` is opt-in and currently **not recommended**: the
 420 s-window forward needs >17 GB on the MPS shared pool and OOMs under

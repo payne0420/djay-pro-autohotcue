@@ -11,6 +11,7 @@ from autohotcue._songformer import (
     SONGFORMER_LABELS,
     _HF_REVISION,
     _MODEL_SR,
+    _get_model,
     _hf_revision,
     _map_songformer_segments,
     _resolve_device,
@@ -90,6 +91,12 @@ def test_songformer_drops_silence_segments():
     assert [s.label for s in segs] == ["intro", "chorus"]
 
 
+def test_songformer_silence_with_non_finite_boundary_raises():
+    raw = [{"label": "silence", "start": float("nan"), "end": 1.2}]
+    with pytest.raises(ValueError, match="non-finite segment boundary"):
+        _map_songformer_segments(raw, duration_s=10.0)
+
+
 def test_songformer_unknown_label_raises():
     raw = [{"label": "unknown_tag", "start": 0.0, "end": 8.0}]
     with pytest.raises(ValueError, match="unknown songformer segment label"):
@@ -141,6 +148,24 @@ def test_hf_revision_default_and_override(monkeypatch):
 
     monkeypatch.setenv("AUTOHOTCUE_SONGFORMER_REVISION", "deadbeef")
     assert _hf_revision() == "deadbeef"
+
+
+def test_get_model_raises_when_device_or_revision_changes(monkeypatch):
+    import autohotcue._songformer as mod
+
+    sentinel = object()
+    monkeypatch.setattr(mod, "_model", sentinel)
+    monkeypatch.setattr(mod, "_model_device", "cpu")
+    monkeypatch.setattr(mod, "_model_revision", _HF_REVISION)
+
+    with pytest.raises(RuntimeError, match="ml-songformer model already loaded"):
+        _get_model("mps")
+
+    assert _get_model("cpu") is sentinel
+
+    monkeypatch.setenv("AUTOHOTCUE_SONGFORMER_REVISION", "other-rev")
+    with pytest.raises(RuntimeError, match="ml-songformer model already loaded"):
+        _get_model("cpu")
 
 
 @pytest.fixture

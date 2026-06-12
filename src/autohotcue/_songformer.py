@@ -65,6 +65,7 @@ def _stub_msaf() -> None:
 
 
 def _resolve_device() -> str:
+    # Env var intentionally takes precedence over analyze()'s device flag (mirrors ml-allin1).
     return os.environ.get("AUTOHOTCUE_SONGFORMER_DEVICE", "cpu")
 
 
@@ -86,7 +87,15 @@ def _snapshot_download(revision: str) -> str:
 def _get_model(device: str):
     global _model, _model_device, _model_revision
     revision = _hf_revision()
-    if _model is None or _model_device != device or _model_revision != revision:
+    if _model is not None and (_model_device != device or _model_revision != revision):
+        # Remote-code modules and SONGFORMER_LOCAL_DIR are process-global; a second
+        # load would mix snapshots and double peak memory.
+        raise RuntimeError(
+            f"ml-songformer model already loaded for device={_model_device!r} "
+            f"revision={_model_revision!r}; one device/revision per process — "
+            "restart to switch"
+        )
+    if _model is None:
         try:
             import torch
             from transformers import AutoModel
@@ -94,7 +103,7 @@ def _get_model(device: str):
             raise _import_error(exc) from exc
 
         snapshot = _snapshot_download(revision)
-        os.environ.setdefault("SONGFORMER_LOCAL_DIR", snapshot)
+        os.environ["SONGFORMER_LOCAL_DIR"] = snapshot
         _stub_msaf()
 
         try:
@@ -120,13 +129,12 @@ def _get_model(device: str):
 
 
 def _map_songformer_segments(raw_segments: list, duration_s: float) -> list[Segment]:
+    _known_labels = SONGFORMER_LABELS | _DROP_LABELS
     segments: list[Segment] = []
     for seg in raw_segments:
         label = str(seg["label"]).lower()
         label = _LABEL_MAP.get(label, label)
-        if label in _DROP_LABELS:
-            continue
-        if label not in SONGFORMER_LABELS:
+        if label not in _known_labels:
             raise ValueError(
                 f"unknown songformer segment label {seg['label']!r} "
                 f"(expected one of {sorted(SONGFORMER_LABELS)})"
@@ -138,6 +146,8 @@ def _map_songformer_segments(raw_segments: list, duration_s: float) -> list[Segm
                 f"non-finite segment boundary for {seg['label']!r}: "
                 f"start={seg['start']!r}, end={seg['end']!r}"
             )
+        if label in _DROP_LABELS:
+            continue
         start = max(0.0, start)
         end = min(duration_s, end)
         if end > start:

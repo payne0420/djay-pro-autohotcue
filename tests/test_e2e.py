@@ -75,8 +75,13 @@ def _allin1_prereqs() -> bool:
 
 def _songformer_prereqs() -> bool:
     try:
+        import importlib
+
         import transformers  # noqa: F401
         from huggingface_hub import snapshot_download
+
+        for name in ("muq", "torchaudio", "omegaconf", "loguru", "ema_pytorch", "x_transformers"):
+            importlib.import_module(name)
 
         from autohotcue._songformer import _MODEL_ID, _hf_revision
 
