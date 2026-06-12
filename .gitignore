@@ -11,3 +11,6 @@ wheels/
 
 # Local clone for allin1 investigation — never commit
 all-in-one-mlx/
+
+# macOS
+.DS_Store

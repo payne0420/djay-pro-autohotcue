@@ -19,6 +19,7 @@ RETURN_MIN_ON_BARS = 8
 PHRASE_BARS = 8
 SNAP_MAX_BARS = 2
 A_MIN_FRAC = 0.25
+MIN_DROP_FRAC = 0.20
 LOUD_REF_PCTL = 90.0
 OUTRO_MIN_BARS = 2
 MIN_BARS = 24
@@ -169,6 +170,18 @@ def _last_phrase_between(origin: int, after_bar: int, before_bar: int) -> int | 
     return origin + k_hi * PHRASE_BARS
 
 
+def _apply_d_a_backstop(
+    d_raw: int | None,
+    e_raw: int | None,
+    f_raw: int | None,
+    a_idx: int,
+) -> tuple[int | None, int | None, int | None, bool]:
+    """When D coincides with A, clear D and dependent E/F raw slots."""
+    if d_raw is not None and d_raw == a_idx:
+        return None, None, None, True
+    return d_raw, e_raw, f_raw, False
+
+
 def _last_phrase_before_end(origin: int, n_bars: int) -> int | None:
     last_start = n_bars - OUTRO_MIN_BARS
     if last_start <= origin:
@@ -262,11 +275,17 @@ def propose_cues_bass(
     p.positions["B"] = float(bar_starts[a_idx])
 
     runs = _runs(bass.bass_on)
-    d_raw = _detect_drop(runs)
+    d_raw = _detect_drop(runs, n_bars)
     e_raw = _detect_break(runs, d_raw)
     f_raw = _detect_return(runs, e_raw)
+    d_raw, e_raw, f_raw, d_coincides_a = _apply_d_a_backstop(
+        d_raw, e_raw, f_raw, a_idx,
+    )
 
     d_bar = e_bar = f_bar = g_bar = None
+
+    if d_coincides_a:
+        p.notes.append("D (Drop): omitted (coincides with A)")
 
     if d_raw is not None:
         d_bar, d_note = _finalize_event_bar("D", d_raw, phrase_origin, lattice_locked)
@@ -274,19 +293,27 @@ def propose_cues_bass(
         if lattice_locked:
             p.notes.append(d_note)
     else:
-        p.notes.append("D (Drop): omitted (no bass-in transition)")
+        if not d_coincides_a:
+            p.notes.append("D (Drop): omitted (no qualifying drop; groove only)")
         p.notes.append("C (Buildup): omitted (no D)")
         p.notes.append("E (Breakdown): omitted (no D)")
         p.notes.append("F (2nd Drop): omitted (no E)")
 
-    if d_bar is not None and lattice_locked:
-        c_bar = _last_phrase_between(phrase_origin, a_idx, d_bar)
-        if c_bar is not None and c_bar > a_idx:
+    if d_bar is not None:
+        c_bar, c_note = _place_buildup(
+            runs,
+            d_raw,
+            d_bar,
+            a_idx,
+            phrase_origin,
+            lattice_locked,
+        )
+        if c_bar is not None:
             p.positions["C"] = float(bar_starts[c_bar])
-        else:
-            p.notes.append("C (Buildup): omitted (nothing between B and D)")
-    elif d_bar is not None:
-        p.notes.append("C (Buildup): omitted (phrase snapping disabled)")
+            if c_note:
+                p.notes.append(c_note)
+        elif c_note:
+            p.notes.append(c_note)
 
     if e_raw is not None:
         e_bar, e_note = _finalize_event_bar("E", e_raw, phrase_origin, lattice_locked)
@@ -330,15 +357,74 @@ def _first_a_bar(kick_rms: np.ndarray, loud_ref: float) -> int:
     return 0
 
 
-def _detect_drop(runs: list[tuple[int, int, bool]]) -> int | None:
+def _detect_drop(runs: list[tuple[int, int, bool]], n_bars: int) -> int | None:
     prev_off_len = 0
+    on_run_count = 0
+    min_drop_bar = MIN_DROP_FRAC * n_bars
     for start, length, is_on in runs:
         if is_on:
             if length >= DROP_MIN_ON_BARS and prev_off_len >= PRE_DROP_MIN_OFF_BARS:
-                return start
+                is_return = on_run_count >= 1
+                is_late = start >= min_drop_bar
+                if is_return or is_late:
+                    return start
+            on_run_count += 1
         else:
             prev_off_len = length
     return None
+
+
+def _preceding_off_start(runs: list[tuple[int, int, bool]], d_bar: int) -> int | None:
+    prev_off_len = 0
+    for start, length, is_on in runs:
+        if is_on and start == d_bar:
+            if prev_off_len > 0:
+                return start - prev_off_len
+            return None
+        if not is_on:
+            prev_off_len = length
+    return None
+
+
+def _place_buildup(
+    runs: list[tuple[int, int, bool]],
+    d_raw: int,
+    d_bar: int,
+    a_idx: int,
+    origin: int,
+    lattice_locked: bool,
+) -> tuple[int | None, str | None]:
+    off_start = _preceding_off_start(runs, d_raw)
+    if off_start is not None and off_start > a_idx:
+        return _finalize_c_event(off_start, d_bar, a_idx, origin, lattice_locked)
+
+    if not lattice_locked:
+        return None, "C (Buildup): omitted (phrase snapping disabled)"
+
+    c_bar = _last_phrase_between(origin, a_idx, d_bar)
+    if c_bar is not None and c_bar > a_idx:
+        return c_bar, None
+    return None, "C (Buildup): omitted (nothing between B and D)"
+
+
+def _finalize_c_event(
+    raw_bar: int,
+    d_bar: int,
+    a_idx: int,
+    origin: int,
+    lattice_locked: bool,
+) -> tuple[int | None, str | None]:
+    if not lattice_locked:
+        if a_idx < raw_bar < d_bar:
+            return raw_bar, None
+        return None, "C (Buildup): omitted (nothing between B and D)"
+
+    snapped, _ = _snap_bar(raw_bar, origin)
+    for candidate in (snapped, raw_bar):
+        if a_idx < candidate < d_bar:
+            note = _event_note("C", raw_bar, origin, candidate)
+            return candidate, note
+    return None, "C (Buildup): omitted (nothing between B and D)"
 
 
 def _detect_break(runs: list[tuple[int, int, bool]], d_bar: int | None) -> int | None:

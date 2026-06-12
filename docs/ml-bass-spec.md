@@ -47,6 +47,7 @@ RETURN_MIN_ON_BARS = 8     # bass-return must sustain this long to be F
 PHRASE_BARS = 8            # snapping lattice (16/32-bar offsets still reported)
 SNAP_MAX_BARS = 2          # max distance moved by phrase snapping
 A_MIN_FRAC = 0.25          # A = first bar with kick RMS >= this * loud_ref
+MIN_DROP_FRAC = 0.20       # first bass-in must start this far in to count as D (not groove)
 OUTRO_MIN_BARS = 2         # G must leave >= 2 bars (8 beats) before track end
 MIN_BARS = 24              # below this, place A/B only (short-track convention)
 ```
@@ -105,9 +106,15 @@ def propose_cues_bass(
 ### Events (run-length analysis of `bass_on`)
 
 - **D (Drop)** = start bar of the first ON-run with length >= `DROP_MIN_ON_BARS`
-  whose immediately preceding OFF-run has length >= `PRE_DROP_MIN_OFF_BARS`.
-  A track whose bass is on from (near) the start has no such transition →
-  **omit D** with note `"D (Drop): omitted (no bass-in transition)"`.
+  whose immediately preceding OFF-run has length >= `PRE_DROP_MIN_OFF_BARS`, and
+  which additionally qualifies as either a **return** (at least one earlier ON-run
+  existed before that OFF-run) or **late** (start bar >= `MIN_DROP_FRAC * n_bars`).
+  The first bass-in that is merely the groove starting (no prior bass, not late
+  enough) is never D — the real drop is the payoff/return after a bass-out.
+  Omit D with note `"D (Drop): omitted (no qualifying drop; groove only)"` when
+  no run qualifies (including tracks whose bass is on from the start with no
+  preceding OFF-run). If a computed D would coincide with A's bar, omit D with a
+  note instead (backstop; should not occur in normal detection).
 - **E (Breakdown)** = start bar of the first OFF-run with length >=
   `BREAK_MIN_OFF_BARS` (8 bars) that starts after D. Short bass dips (< 8 bars)
   are skipped so the real breakdown is cued. Omit (with note) when D omitted or
@@ -118,9 +125,20 @@ def propose_cues_bass(
 - **A (First Beat)** = first bar with `kick_rms >= A_MIN_FRAC * loud_ref`
   (skips silent/pad bars in front of the lattice). **B = A** (loop-in
   convention).
-- **C (Buildup)** = last phrase boundary strictly between B and D (only when
-  snapping is active and D exists); else omit with note. With D snapped to a
-  boundary this is normally `D - PHRASE_BARS` bars.
+- **C (Buildup)** = when D exists and snapping is active: if the OFF-run
+  immediately before D begins **after** A's bar (bass was on earlier — a
+  build/vocal section, not a plain intro), C is the **start bar of that OFF-run**
+  (pre-drop bass-out → build). Snap it on the 8-bar lattice like D/E/F; if
+  snapping would place C at or beyond D or at/before B, keep the raw bar; if
+  still out of range, omit with note. When the preceding OFF-run starts at or
+  before A's bar, fall back to phrase arithmetic: last phrase boundary strictly
+  between B and D (normally `D - PHRASE_BARS` when D is on a boundary). Detected
+  C events get the same machine-greppable note prefix as D/E/F, e.g.
+  `"C: raw bar 29, off8=-3, off16=+5, off32=+5, off-phrase (unsnapped)"`.
+  Omit with note when D is absent or nothing valid lies between B and D.
+  When phrase snapping is disabled (gate-refused / not lattice-locked), a
+  pre-drop OFF-run C is still placed at its raw bar like D/E/F — no snapping and
+  no off8= notes.
 - **G (Outro)** = start bar of the trailing OFF-run (bass out through the end of
   the track) when one exists with length >= `OUTRO_MIN_BARS`; else the last
   phrase boundary (when snapping active) or last bar minus `OUTRO_MIN_BARS`
@@ -136,10 +154,10 @@ def propose_cues_bass(
 - `phrase_origin` = A's bar index `a0`. Phrase boundaries = `a0 + k * PHRASE_BARS`
   (8-bar lattice; corpus evidence: 85% of raw drops land within 1 bar of an
   8-bar boundary vs 59% for 16-bar).
-- For each detected event in {D, E, F, G} with raw bar index `b`: let `d` =
+- For each detected event in {C, D, E, F, G} with raw bar index `b`: let `d` =
   signed distance to the nearest 8-bar boundary. If `|d| <= SNAP_MAX_BARS`, move
   the event to that boundary; otherwise keep `b` (flag, don't force).
-- Every detected D/E/F gets a machine-greppable note with the RAW (pre-snap)
+- Every detected C/D/E/F gets a machine-greppable note with the RAW (pre-snap)
   bar and offsets to the nearest 8-, 16-, and 32-bar boundaries, e.g.:
   `"D: raw bar 33, off8=+1, off16=+1, off32=+1, snapped to bar 32"` or
   `"D: raw bar 37, off8=-3, off16=+5, off32=+5, off-phrase (unsnapped)"`.
@@ -206,7 +224,8 @@ def propose_cues_bass(
 - Do not change the default engine; `ml` stays the default everywhere.
 - Do not modify `cuepolicy.py` (importing from it is fine).
 - No new dependencies (scipy/numpy already present).
-- Vocal-band C detection is future work — C comes from phrase arithmetic only.
+- Vocal-band C detection is future work — C comes from the pre-drop OFF-run when
+  bass was on earlier, else phrase arithmetic between B and D.
 
 ## Tests: new `tests/test_bassline.py` (+ one e2e case)
 

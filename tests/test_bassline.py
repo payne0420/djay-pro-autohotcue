@@ -6,7 +6,7 @@ import pytest
 
 from autohotcue import analysis, cli
 from autohotcue.backends import BeatAnalysis
-from autohotcue.bassline import propose_cues_bass
+from autohotcue.bassline import _apply_d_a_backstop, propose_cues_bass
 from autohotcue.gridlock import GridFit, fit_grid
 
 SR = 44100
@@ -208,7 +208,7 @@ def test_no_transition():
     assert "E" not in prop.positions
     assert "F" not in prop.positions
     assert "A" in prop.positions and "B" in prop.positions
-    assert any("no bass-in transition" in n for n in prop.notes)
+    assert any("no qualifying drop" in n for n in prop.notes)
     assert "G" in prop.positions
     _assert_ordering(prop.positions)
 
@@ -230,6 +230,72 @@ def test_hysteresis():
 
     assert "E" in prop.positions
     _assert_near_bar(prop.positions["E"], bpm, 80, anchor)
+
+
+def test_d_a_backstop_clears_e_f():
+    d, e, f, fired = _apply_d_a_backstop(32, 64, 80, 32)
+    assert fired
+    assert d is None and e is None and f is None
+
+    d, e, f, fired = _apply_d_a_backstop(32, 64, 80, 0)
+    assert not fired
+    assert (d, e, f) == (32, 64, 80)
+
+
+def test_d_a_backstop_integration():
+    """Late first bass-in at A's bar triggers D==A backstop; E/F must not emit."""
+    bpm = 124.0
+    anchor = 1.5
+    y, beats, downbeats = _synth_bass_track(
+        bpm,
+        24,
+        true_anchor=anchor,
+        kick_from_bar=5,
+        bass_bars=range(5, 24),
+    )
+    beat = _beat_analysis(beats, downbeats, bpm, len(y) / SR)
+    fit = fit_grid(y, SR, beats, downbeats, djay_bpm=bpm)
+    prop, _ = propose_cues_bass(y, SR, beat, fit, djay_bpm=bpm)
+
+    assert "D" not in prop.positions
+    assert "E" not in prop.positions
+    assert "F" not in prop.positions
+    assert any("coincides with A" in n for n in prop.notes)
+    assert any("C (Buildup): omitted (no D)" in n for n in prop.notes)
+    assert any("E (Breakdown): omitted (no D)" in n for n in prop.notes)
+    assert any("F (2nd Drop): omitted (no E)" in n for n in prop.notes)
+    assert not any("no qualifying drop" in n for n in prop.notes)
+
+
+def test_gate_refused_groove_start_c():
+    """Gate-refused: pre-drop OFF-run C at raw bar, same as lattice-locked path."""
+    bpm = 124.0
+    anchor = 1.5
+    y, beats, downbeats = _synth_bass_track(
+        bpm,
+        160,
+        true_anchor=anchor,
+        bass_bars=tuple(
+            list(range(16, 29)) + list(range(64, 120)) + list(range(136, 152))
+        ),
+    )
+    beat = _beat_analysis(beats, downbeats, bpm, len(y) / SR)
+    fit = GridFit(
+        bpm=bpm,
+        render_bpm=bpm,
+        anchor_s=anchor,
+        beat_fit=0.01,
+        bar_resid_std=0.01,
+        splice_jump=0.2,
+        ok=False,
+        reason="phase jumps between sections (spliced edit?)",
+    )
+    prop, bass = propose_cues_bass(y, SR, beat, fit)
+    assert bass.snapped is False
+    assert any("phrase snapping disabled" in n for n in prop.notes)
+    assert not any("off8=" in n for n in prop.notes)
+    _assert_near_bar(prop.positions["C"], bpm, 29, anchor)
+    _assert_near_bar(prop.positions["D"], bpm, 64, anchor)
 
 
 def test_gate_refused_fallback():
@@ -333,7 +399,8 @@ def test_outro_snap_fallback():
     fit = fit_grid(y, SR, beats, downbeats, djay_bpm=bpm)
     prop, _ = propose_cues_bass(y, SR, beat, fit, djay_bpm=bpm)
 
-    _assert_near_bar(prop.positions["D"], bpm, 8, anchor)
+    assert "D" not in prop.positions
+    assert any("no qualifying drop" in n for n in prop.notes)
     _assert_near_bar(prop.positions["G"], bpm, 94, anchor)
     _assert_near_bar(prop.positions["H"], bpm, 94, anchor)
 
@@ -370,6 +437,59 @@ def test_ordering():
     fit = fit_grid(y, SR, beats, downbeats, djay_bpm=bpm)
     prop, _ = propose_cues_bass(y, SR, beat, fit, djay_bpm=bpm)
     _assert_ordering(prop.positions)
+
+
+def test_groove_start_not_drop():
+    """Groove-start bass-in at bar 16 is not D; real drop is the return at bar 64."""
+    bpm = 124.0
+    anchor = 1.5
+    y, beats, downbeats = _synth_bass_track(
+        bpm,
+        160,
+        true_anchor=anchor,
+        bass_bars=tuple(
+            list(range(16, 29)) + list(range(64, 120)) + list(range(136, 152))
+        ),
+    )
+    beat = _beat_analysis(beats, downbeats, bpm, len(y) / SR)
+    fit = fit_grid(y, SR, beats, downbeats, djay_bpm=bpm)
+    prop, _ = propose_cues_bass(y, SR, beat, fit, djay_bpm=bpm)
+
+    _assert_near_bar(prop.positions["A"], bpm, 0, anchor)
+    _assert_near_bar(prop.positions["B"], bpm, 0, anchor)
+    _assert_near_bar(prop.positions["C"], bpm, 29, anchor)
+    _assert_near_bar(prop.positions["D"], bpm, 64, anchor)
+    _assert_near_bar(prop.positions["E"], bpm, 120, anchor)
+    _assert_near_bar(prop.positions["F"], bpm, 136, anchor)
+    _assert_near_bar(prop.positions["G"], bpm, 152, anchor)
+    _assert_near_bar(prop.positions["H"], bpm, 152, anchor)
+    assert any("C: raw bar 29" in n and "off-phrase (unsnapped)" in n for n in prop.notes)
+    _assert_ordering(prop.positions)
+
+
+def test_no_qualifying_drop_omits():
+    """Single early bass-in with no return is groove-only: D/C/E/F omitted."""
+    bpm = 124.0
+    anchor = 1.5
+    y, beats, downbeats = _synth_bass_track(
+        bpm,
+        96,
+        true_anchor=anchor,
+        bass_bars=range(8, 94),
+    )
+    beat = _beat_analysis(beats, downbeats, bpm, len(y) / SR)
+    fit = fit_grid(y, SR, beats, downbeats, djay_bpm=bpm)
+    prop, _ = propose_cues_bass(y, SR, beat, fit, djay_bpm=bpm)
+
+    _assert_near_bar(prop.positions["A"], bpm, 0, anchor)
+    _assert_near_bar(prop.positions["B"], bpm, 0, anchor)
+    assert "D" not in prop.positions
+    assert "C" not in prop.positions
+    assert "E" not in prop.positions
+    assert "F" not in prop.positions
+    assert any("no qualifying drop" in n for n in prop.notes)
+    _assert_near_bar(prop.positions["G"], bpm, 94, anchor)
+    _assert_near_bar(prop.positions["H"], bpm, 94, anchor)
 
 
 def _assert_ordering(pos: dict[str, float]) -> None:
