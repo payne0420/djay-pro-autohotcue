@@ -1,8 +1,13 @@
-"""Optional SongFormer structure backend (CPU by default; HF remote code pinned by revision)."""
+"""Optional SongFormer structure backend (CPU by default; HF remote code pinned by revision).
+
+CPU forward pass peaks at ~24 GB RSS (420 s windows, f32); set AUTOHOTCUE_SONGFORMER_MEM_GB
+(default 26) for a kernel-enforced allocation ceiling, or 0 to disable.
+"""
 from __future__ import annotations
 
 import importlib.machinery
 import os
+import resource
 import sys
 import types
 from pathlib import Path
@@ -73,6 +78,24 @@ def _hf_revision() -> str:
     return os.environ.get("AUTOHOTCUE_SONGFORMER_REVISION", _HF_REVISION)
 
 
+def _apply_memory_ceiling() -> None:
+    mem_gb = os.environ.get("AUTOHOTCUE_SONGFORMER_MEM_GB", "26")
+    try:
+        ceiling_gb = float(mem_gb)
+    except ValueError:
+        return
+    if ceiling_gb == 0:
+        return
+    ceiling_bytes = int(ceiling_gb * 1024**3)
+    try:
+        soft, _hard = resource.getrlimit(resource.RLIMIT_DATA)
+        if soft != resource.RLIM_INFINITY and soft <= ceiling_bytes:
+            return
+        resource.setrlimit(resource.RLIMIT_DATA, (ceiling_bytes, ceiling_bytes))
+    except (ValueError, OSError):
+        pass  # best-effort; macOS enforces RLIMIT_DATA for malloc since Ventura
+
+
 def _snapshot_download(revision: str) -> str:
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
@@ -86,6 +109,7 @@ def _snapshot_download(revision: str) -> str:
 
 def _get_model(device: str):
     global _model, _model_device, _model_revision
+    _apply_memory_ceiling()
     revision = _hf_revision()
     if _model is not None and (_model_device != device or _model_revision != revision):
         # Remote-code modules and SONGFORMER_LOCAL_DIR are process-global; a second
@@ -175,8 +199,19 @@ def segment_structure_songformer(
     y_model = librosa.resample(y, orig_sr=sr, target_sr=_MODEL_SR)
     waveform = np.asarray(y_model, dtype=np.float32)
     try:
-        with torch.inference_mode():
-            raw_segments = model(waveform)
+        try:
+            with torch.inference_mode():
+                raw_segments = model(waveform)
+        except (MemoryError, RuntimeError) as exc:
+            if isinstance(exc, MemoryError) or any(
+                token in str(exc).lower() for token in ("allocate", "memory")
+            ):
+                raise RuntimeError(
+                    "SongFormer analysis needs up to ~24 GB free RAM; close memory-heavy "
+                    "apps, or lower/disable the ceiling via AUTOHOTCUE_SONGFORMER_MEM_GB "
+                    "(0 disables), or use --engine ml-allin1 instead."
+                ) from exc
+            raise
         segments = _map_songformer_segments(raw_segments, beat.duration_s)
         segments = energy_ranks_for_segments(y, sr, segments)
         return StructureAnalysis(segments=segments, source="songformer")

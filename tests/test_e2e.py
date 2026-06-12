@@ -1,6 +1,7 @@
 """End-to-end integration tests against real audio tracks and library copies."""
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from pathlib import Path
@@ -168,6 +169,10 @@ def test_ml_allin1_analyze_real_track(track_path: str):
         assert _beats_after(prop.positions["G"], track.beats) >= 8
 
 
+@pytest.mark.skipif(
+    os.environ.get("AUTOHOTCUE_RUN_SONGFORMER_E2E") != "1",
+    reason="opt-in: set AUTOHOTCUE_RUN_SONGFORMER_E2E=1 (forward peaks ~24 GB RAM)",
+)
 @pytest.mark.skipif(not _songformer_prereqs(), reason="ml-songformer prerequisites missing")
 def test_ml_songformer_analyze_real_track(monkeypatch):
     # CPU forward is ~108 s per 6-min track; run only the first e2e track.

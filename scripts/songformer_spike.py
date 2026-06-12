@@ -148,7 +148,66 @@ def _resolve_device(choice: str) -> str:
     return choice
 
 
-def _load_model(device: str):
+_TORCH_DTYPES = {"f32": None, "bf16": "bfloat16", "f16": "float16"}
+
+
+def _enable_flash_attention(snapshot: str) -> None:
+    """Route MuQ + MusicFM through their bundled SDPA paths (never materializes
+    the 10500x10500 attention scores that dominate 420 s-window memory).
+
+    MuQ reads is_flash from muq_config2.json under SONGFORMER_LOCAL_DIR, so an
+    overlay dir with a patched copy flips it. MusicFM's is_flash=False is
+    hardcoded in modeling_songformer; pre-importing the bundled module and
+    wrapping the class swaps it before the modeling code binds the name.
+    """
+    import contextlib
+    import importlib
+    import shutil
+    import tempfile
+
+    import torch
+
+    overlay = Path(tempfile.mkdtemp(prefix="songformer-flash-"))
+    cfg = json.loads((Path(snapshot) / "muq_config2.json").read_text())
+    cfg["is_flash"] = True
+    (overlay / "muq_config2.json").write_text(json.dumps(cfg))
+    shutil.copy2(Path(snapshot) / "msd_stats.json", overlay / "msd_stats.json")
+    os.environ["SONGFORMER_LOCAL_DIR"] = str(overlay)
+
+    if snapshot not in sys.path:
+        sys.path.insert(0, snapshot)
+    # Both flash branches do `from modules.flash_conformer import ...` (a research
+    # -layout top-level import); muq's inner dir provides it, and the bundled
+    # musicfm copy is byte-identical, so one resolution serves both.
+    import muq as _muq
+
+    muq_inner = str(Path(_muq.__file__).parent / "muq")
+    if muq_inner not in sys.path:
+        sys.path.insert(0, muq_inner)
+    # flash_conformer imports the pre-4.3x "transformers.deepspeed" shim; alias
+    # its current home under the old name.
+    if "transformers.deepspeed" not in sys.modules:
+        sys.modules["transformers.deepspeed"] = importlib.import_module(
+            "transformers.integrations.deepspeed"
+        )
+
+    m25 = importlib.import_module("musicfm.model.musicfm_25hz")
+    orig = m25.MusicFM25Hz
+
+    class _FlashMusicFM(orig):
+        def __init__(self, *args, **kwargs):
+            kwargs["is_flash"] = True
+            super().__init__(*args, **kwargs)
+
+    m25.MusicFM25Hz = _FlashMusicFM
+
+    # flash_conformer wraps SDPA in torch.backends.cuda.sdp_kernel, removed in
+    # newer torch; the flags are CUDA-only anyway, so a null context is exact.
+    if not hasattr(torch.backends.cuda, "sdp_kernel"):
+        torch.backends.cuda.sdp_kernel = lambda **kwargs: contextlib.nullcontext()
+
+
+def _load_model(device: str, dtype: str = "f32", win_s: int = 0, flash: bool = False):
     import torch
     from huggingface_hub import snapshot_download
     from transformers import AutoModel
@@ -157,6 +216,12 @@ def _load_model(device: str):
     # bundled muq_config2.json / msd_stats.json.
     snapshot = snapshot_download(MODEL_ID, revision=REVISION, local_files_only=True)
     os.environ.setdefault("SONGFORMER_LOCAL_DIR", snapshot)
+    if flash:
+        _enable_flash_attention(snapshot)
+
+    config_overrides = {}
+    if win_s > 0:
+        config_overrides = {"win_size": win_s, "hop_size": win_s}
 
     load_strategy = "direct"
     try:
@@ -164,15 +229,9 @@ def _load_model(device: str):
             MODEL_ID,
             trust_remote_code=True,
             revision=REVISION,
+            **config_overrides,
         )
     except (ImportError, ModuleNotFoundError) as exc:
-        from huggingface_hub import snapshot_download
-
-        snapshot = snapshot_download(
-            MODEL_ID,
-            revision=REVISION,
-            local_files_only=True,
-        )
         sys.path.insert(0, snapshot)
         load_strategy = f"sys.path.insert(0, {snapshot!r})"
         print(f"direct load failed ({exc!r}); retrying with {load_strategy}")
@@ -180,10 +239,14 @@ def _load_model(device: str):
             MODEL_ID,
             trust_remote_code=True,
             revision=REVISION,
+            **config_overrides,
         )
 
     print(f"load_strategy: {load_strategy}")
+    print(f"win_size={model.config.win_size} hop_size={model.config.hop_size} dtype={dtype}")
     model.eval()
+    if _TORCH_DTYPES[dtype] is not None:
+        model.to(getattr(torch, _TORCH_DTYPES[dtype]))
     model.to(device)
     return model
 
@@ -192,7 +255,9 @@ def _peak_rss_bytes() -> int:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 
 
-def _run_track(model, device: str, track_path: str) -> None:
+def _run_track(
+    model, device: str, track_path: str, dtype: str = "f32", autocast: bool = False
+) -> None:
     import librosa
     import numpy as np
     import torch
@@ -203,10 +268,18 @@ def _run_track(model, device: str, track_path: str) -> None:
     duration_s = len(y) / SR
     y_model = librosa.resample(y, orig_sr=SR, target_sr=MODEL_SR)
     waveform = np.asarray(y_model, dtype=np.float32)
+    model_input: object = waveform
+    if _TORCH_DTYPES[dtype] is not None:
+        model_input = torch.from_numpy(waveform).to(getattr(torch, _TORCH_DTYPES[dtype]))
 
     t0 = time.perf_counter()
-    with torch.inference_mode():
-        segments = model(waveform)
+    if autocast:
+        ac_dtype = torch.bfloat16 if device == "cpu" else torch.float16
+        with torch.inference_mode(), torch.autocast(device_type=device, dtype=ac_dtype):
+            segments = model(model_input)
+    else:
+        with torch.inference_mode():
+            segments = model(model_input)
     forward_s = time.perf_counter() - t0
 
     rss = _peak_rss_bytes()
@@ -226,14 +299,21 @@ def _empty_mps_cache() -> None:
         pass
 
 
-def cmd_run(device_choice: str, tracks: list[str]) -> None:
+def cmd_run(
+    device_choice: str,
+    tracks: list[str],
+    dtype: str = "f32",
+    win_s: int = 0,
+    autocast: bool = False,
+    flash: bool = False,
+) -> None:
     device = _resolve_device(device_choice)
     _stub_msaf()
-    model = _load_model(device)
+    model = _load_model(device, dtype=dtype, win_s=win_s, flash=flash)
 
     for track_path in tracks:
         try:
-            _run_track(model, device, track_path)
+            _run_track(model, device, track_path, dtype=dtype, autocast=autocast)
         except Exception as exc:
             print(f"ERROR track={track_path!r}: {exc!r}", file=sys.stderr)
             if device == "mps":
@@ -260,6 +340,28 @@ def main() -> None:
         help="Inference device (default: auto)",
     )
     parser.add_argument(
+        "--dtype",
+        choices=tuple(_TORCH_DTYPES),
+        default="f32",
+        help="Model + input precision (default: f32)",
+    )
+    parser.add_argument(
+        "--win",
+        type=int,
+        default=0,
+        help="Override model win_size/hop_size in seconds (0 = model default 420)",
+    )
+    parser.add_argument(
+        "--flash",
+        action="store_true",
+        help="Use bundled SDPA attention paths in MuQ/MusicFM (memory-efficient)",
+    )
+    parser.add_argument(
+        "--autocast",
+        action="store_true",
+        help="Run forward under torch.autocast (bf16 on cpu, f16 on mps); model stays f32",
+    )
+    parser.add_argument(
         "tracks",
         nargs="*",
         help="Audio file paths to analyze",
@@ -274,7 +376,7 @@ def main() -> None:
     if not args.tracks:
         parser.error("provide at least one track path, or use --check")
 
-    cmd_run(args.device, args.tracks)
+    cmd_run(args.device, args.tracks, dtype=args.dtype, win_s=args.win, autocast=args.autocast, flash=args.flash)
 
 
 if __name__ == "__main__":

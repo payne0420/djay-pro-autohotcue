@@ -68,6 +68,25 @@ watermarks, `PYTORCH_MPS_LOW_WATERMARK_RATIO` must be ≤ `HIGH`.
 `effective_parallel_jobs` forces `jobs=1` for `ml-songformer` (model singleton; analysis
 stays on the main process).
 
+## Memory
+
+CPU f32 forward pass peaks at **~24 GB transient RSS** per track (420 s attention windows).
+On a 32 GB machine an uncapped excursion can swap-thrash the whole system.
+
+The backend sets a kernel-enforced process allocation ceiling via
+`resource.setrlimit(RLIMIT_DATA)` before model load (default **26 GB** via
+`AUTOHOTCUE_SONGFORMER_MEM_GB`; set to **0** to disable). A hit surfaces as a clear
+`RuntimeError` with remediation hints instead of silent swapping.
+
+Alternatives evaluated and rejected:
+
+| Approach | Outcome |
+|----------|---------|
+| MPS (`AUTOHOTCUE_SONGFORMER_DEVICE=mps`) | Needs >17 GB GPU pool; OOMs under default watermarks on 32 GB |
+| bf16 on CPU | No Apple-silicon bf16 support; ~20× slower |
+| 210 s windows (half default) | Corrupts section labels |
+| Bundled SDPA "flash" path | Parked as future work — requires import shims; caused an unbounded allocation excursion in testing |
+
 ## Implementation notes
 
 1. **Remote code + `SONGFORMER_LOCAL_DIR`**: `modeling_songformer` reads bundled config

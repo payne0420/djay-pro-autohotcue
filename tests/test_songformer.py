@@ -11,6 +11,7 @@ from autohotcue._songformer import (
     SONGFORMER_LABELS,
     _HF_REVISION,
     _MODEL_SR,
+    _apply_memory_ceiling,
     _get_model,
     _hf_revision,
     _map_songformer_segments,
@@ -185,6 +186,64 @@ def test_stub_msaf_idempotent_and_blocks_compute_results(clean_msaf_modules):
     assert "msaf" in sys.modules
     with pytest.raises(RuntimeError, match="msaf is stubbed out"):
         sys.modules["msaf"].eval.compute_results()
+
+
+def test_apply_memory_ceiling_zero_is_noop(monkeypatch):
+    import resource
+
+    calls: list[tuple] = []
+
+    def fake_setrlimit(which, limits):
+        calls.append((which, limits))
+
+    monkeypatch.setattr(resource, "setrlimit", fake_setrlimit)
+    monkeypatch.setenv("AUTOHOTCUE_SONGFORMER_MEM_GB", "0")
+    _apply_memory_ceiling()
+    assert calls == []
+
+
+def test_apply_memory_ceiling_huge_value_does_not_raise(monkeypatch):
+    import resource
+
+    calls: list[tuple] = []
+
+    def fake_setrlimit(which, limits):
+        calls.append((which, limits))
+
+    def fake_getrlimit(which):
+        return (resource.RLIM_INFINITY, resource.RLIM_INFINITY)
+
+    monkeypatch.setattr(resource, "getrlimit", fake_getrlimit)
+    monkeypatch.setattr(resource, "setrlimit", fake_setrlimit)
+    monkeypatch.setenv("AUTOHOTCUE_SONGFORMER_MEM_GB", "9999")
+    _apply_memory_ceiling()
+    assert len(calls) == 1
+    which, (soft, hard) = calls[0]
+    assert which == resource.RLIMIT_DATA
+    assert soft == hard == int(9999 * 1024**3)
+
+
+def test_segment_structure_songformer_memory_error_translation(monkeypatch):
+    import autohotcue._songformer as mod
+
+    class FakeModel:
+        def __call__(self, waveform):
+            raise MemoryError("out of memory")
+
+    monkeypatch.setattr(mod, "_get_model", lambda _device: FakeModel())
+
+    rng = np.random.default_rng(0)
+    y = rng.standard_normal(44100 * 2).astype(np.float32)
+    beat = BeatAnalysis(
+        bpm=120.0,
+        beats=np.linspace(0.0, 2.0, 5),
+        downbeats=np.array([0.0, 1.0, 2.0]),
+        duration_s=2.0,
+        source="test",
+    )
+
+    with pytest.raises(RuntimeError, match="AUTOHOTCUE_SONGFORMER_MEM_GB"):
+        segment_structure_songformer("track.wav", y, 44100, beat)
 
 
 def test_segment_structure_songformer_plumbing(monkeypatch):
