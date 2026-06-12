@@ -87,6 +87,39 @@ def build_cue_objects(cues: list[dict]) -> list[tsaf.Obj]:
     return objs
 
 
+# Obj classnames that may appear inside mediaItemUserData when editing in place.
+# Any other nested Obj uses encodings or field order autohotcue does not reproduce.
+EDIT_SAFE_OBJ_CLASSNAMES = frozenset({
+    "ADCMediaItemUserData",
+    "ADCMediaItemTitleID",
+    "ADCCuePoint",
+    "ADCBeatGridEdits",
+})
+
+UNSAFE_EDIT_SKIP = (
+    "record contains djay analysis objects autohotcue cannot safely edit "
+    "(e.g. audio alignment fingerprint); skipping to protect the library"
+)
+
+
+def _collect_obj_classnames(value: object, found: set[str] | None = None) -> set[str]:
+    if found is None:
+        found = set()
+    if isinstance(value, tsaf.Obj):
+        found.add(value.classname)
+        for _, field_value in value.fields:
+            _collect_obj_classnames(field_value, found)
+    elif isinstance(value, tsaf.Arr):
+        for item in value.items:
+            _collect_obj_classnames(item, found)
+    return found
+
+
+def unsafe_edit_classnames(doc: tsaf.Document) -> set[str]:
+    """Return Obj classnames in ``doc`` outside the safe-to-edit set."""
+    return _collect_obj_classnames(doc.root) - EDIT_SAFE_OBJ_CLASSNAMES
+
+
 def ensure_cloud_key(root: tsaf.Obj, key: str):
     """Make sure djay's userChangedCloudKeys array contains ``key``."""
     arr = root.get("userChangedCloudKeys")

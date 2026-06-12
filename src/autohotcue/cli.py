@@ -246,6 +246,8 @@ def _precheck_one(db: djaydb.DjayDB, path: str, args):
                 "cannot reproduce byte-exact, so editing it could corrupt other "
                 "fields. Please report this track."
             )
+        if djaydb.unsafe_edit_classnames(existing):
+            raise _Skip(djaydb.UNSAFE_EDIT_SKIP)
 
     return key, existing, _bpm_for(db, key, args.bpm)
 
