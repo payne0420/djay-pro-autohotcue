@@ -59,6 +59,11 @@ def _kick_band(y: np.ndarray, sr: int) -> np.ndarray:
     return np.asarray(sosfilt(_kick_sos_for_sr(sr), y), dtype=np.float64)
 
 
+def kick_band(y: np.ndarray, sr: int) -> np.ndarray:
+    """Public 30-150 Hz bandpass used by both grid fitting and bassline events."""
+    return _kick_band(y, sr)
+
+
 def _rms(y: np.ndarray, i0: int, i1: int) -> float:
     seg = y[i0:i1]
     if len(seg) == 0:

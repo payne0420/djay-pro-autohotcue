@@ -121,6 +121,32 @@ def test_ml_analyze_real_track(track_path: str):
 
 
 @pytest.mark.parametrize("track_path", E2E_TRACKS)
+def test_ml_bass_analyze_real_track(track_path: str):
+    if not Path(track_path).is_file():
+        pytest.skip(f"missing track: {track_path}")
+
+    t0 = time.perf_counter()
+    track, prop = analysis.analyze(track_path, engine="ml-bass", jobs=1)
+    elapsed = time.perf_counter() - t0
+    print(f"\n{Path(track_path).name}: ml-bass analyze() {elapsed:.1f}s")
+
+    assert track.engine == "ml-bass"
+    assert track.bass is not None
+    assert "A" in prop.positions
+    _check_ordering(prop.positions)
+
+    fit = track.grid_fit
+    if fit is not None and fit.ok:
+        bar_period = 60.0 / fit.bpm
+        anchor = fit.anchor_s
+        for letter, t in prop.positions.items():
+            k = (t - anchor) / bar_period
+            assert abs(k - round(k)) < 1e-6, (
+                f"{letter}={t:.3f}s not on grid-lock lattice"
+            )
+
+
+@pytest.mark.parametrize("track_path", E2E_TRACKS)
 @pytest.mark.skipif(not _allin1_prereqs(), reason="ml-allin1 prerequisites missing")
 def test_ml_allin1_analyze_real_track(track_path: str):
     if not Path(track_path).is_file():

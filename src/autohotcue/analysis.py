@@ -57,6 +57,7 @@ class TrackAnalysis:
     segments: list | None = None  # list[Segment] when ml engine
     djay_bpm: float | None = None
     grid_fit: object | None = None  # gridlock.GridFit when ml engine
+    bass: object | None = None  # bassline.BassAnalysis when ml-bass engine
 
 
 def decode(path: str, sr: int = SR) -> np.ndarray:
@@ -277,7 +278,7 @@ def propose_cues_legacy(
     return grid, p
 
 
-VALID_ENGINES = frozenset({"ml", "ml-librosa", "ml-allin1", "legacy"})
+VALID_ENGINES = frozenset({"ml", "ml-librosa", "ml-allin1", "ml-bass", "legacy"})
 
 
 def normalize_engine(engine: str) -> tuple[str, str | None]:
@@ -290,6 +291,8 @@ def normalize_engine(engine: str) -> tuple[str, str | None]:
         return "legacy", None
     if engine == "ml-allin1":
         return "ml-allin1", "allin1"
+    if engine == "ml-bass":
+        return "ml-bass", None
     return engine, "librosa"
 
 
@@ -339,23 +342,44 @@ def analyze(
         return track, prop
 
     from autohotcue.backends import segment_structure, track_beats
-    from autohotcue.cuepolicy import propose_cues as policy_propose
+    from autohotcue.gridlock import fit_grid
 
     dev = _resolve_device(device, jobs)
     y = decode(path)
     beat = track_beats(y, device=dev)
-    structure = segment_structure(
-        path, y, SR, beat, structure_backend=structure_backend or "librosa"
-    )
-    prop = policy_propose(beat, structure, djay_bpm=known_bpm)
-
-    from autohotcue.gridlock import fit_grid
-
     grid_fit = fit_grid(y, SR, beat.beats, beat.downbeats, known_bpm)
 
     first_beat = float(beat.downbeats[0]) if len(beat.downbeats) else (
         float(beat.beats[0]) if len(beat.beats) else 0.0
     )
+
+    if track_engine == "ml-bass":
+        from autohotcue.bassline import propose_cues_bass
+
+        prop, bass_analysis = propose_cues_bass(
+            y, SR, beat, grid_fit, djay_bpm=known_bpm,
+        )
+        track = TrackAnalysis(
+            bpm=beat.bpm,
+            first_beat_s=first_beat,
+            duration_s=beat.duration_s,
+            engine=track_engine,
+            beats=beat.beats,
+            downbeats=beat.downbeats,
+            segments=None,
+            djay_bpm=known_bpm,
+            grid_fit=grid_fit,
+            bass=bass_analysis,
+        )
+        return track, prop
+
+    from autohotcue.cuepolicy import propose_cues as policy_propose
+
+    structure = segment_structure(
+        path, y, SR, beat, structure_backend=structure_backend or "librosa"
+    )
+    prop = policy_propose(beat, structure, djay_bpm=known_bpm)
+
     track = TrackAnalysis(
         bpm=beat.bpm,
         first_beat_s=first_beat,

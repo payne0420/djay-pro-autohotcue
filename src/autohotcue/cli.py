@@ -89,8 +89,8 @@ def _djay_running() -> bool:
     return out.returncode == 0
 
 
-_ENGINE_CHOICES = ("ml", "ml-librosa", "ml-allin1", "legacy")
-_ML_ENGINES = frozenset({"ml", "ml-librosa", "ml-allin1"})
+_ENGINE_CHOICES = ("ml", "ml-librosa", "ml-allin1", "ml-bass", "legacy")
+_ML_ENGINES = frozenset({"ml", "ml-librosa", "ml-allin1", "ml-bass"})
 
 
 def _is_ml_engine(engine: str) -> bool:
@@ -491,7 +491,8 @@ def _add_engine_arg(sp):
         choices=_ENGINE_CHOICES,
         default="ml",
         help="analysis engine: ml/ml-librosa (librosa structure), "
-        "ml-allin1 (all-in-one-mlx structure), legacy (default: ml)",
+        "ml-allin1 (all-in-one-mlx structure), ml-bass (kick-band events), "
+        "legacy (default: ml)",
     )
 
 

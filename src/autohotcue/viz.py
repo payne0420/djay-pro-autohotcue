@@ -47,7 +47,48 @@ def render(path: str, track: analysis.TrackAnalysis, prop, out_png: str, title: 
         ax.set_title(title, fontsize=11)
 
     ymax = env.max() * 1.05
-    if track.segments:
+    if track.bass is not None:
+        from autohotcue.bassline import PHRASE_BARS
+
+        bass = track.bass
+        bar_starts = bass.bar_starts
+        bar_period = bass.bar_period
+        bass_on = bass.bass_on
+        labeled = False
+        i = 0
+        while i < len(bass_on):
+            if not bass_on[i]:
+                i += 1
+                continue
+            j = i
+            while j < len(bass_on) and bass_on[j]:
+                j += 1
+            t0 = float(bar_starts[i])
+            if j < len(bar_starts):
+                t1 = float(bar_starts[j])
+            else:
+                t1 = float(bar_starts[j - 1]) + bar_period
+            ax.axvspan(t0, t1, color="#e6394622", linewidth=0)
+            if not labeled:
+                mid = (t0 + t1) / 2.0
+                ax.text(
+                    mid, ymax * 0.06, "bass",
+                    ha="center", va="bottom", fontsize=7, color="#333333", alpha=0.85,
+                )
+                labeled = True
+            i = j
+
+        if bass.snapped and bass.phrase_origin is not None:
+            origin = bass.phrase_origin
+            k = 0
+            while True:
+                bar_idx = origin + k * PHRASE_BARS
+                if bar_idx >= len(bar_starts):
+                    break
+                t = float(bar_starts[bar_idx])
+                ax.axvline(t, color="#00000055", linewidth=1.2, zorder=2)
+                k += 1
+    elif track.segments:
         for seg in track.segments:
             color = SEG_COLORS.get(seg.label, "#88888833")
             ax.axvspan(seg.start, seg.end, color=color, linewidth=0)
