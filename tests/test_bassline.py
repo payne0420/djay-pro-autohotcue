@@ -119,7 +119,7 @@ def test_full_layout():
 
     _assert_near_bar(prop.positions["A"], bpm, 0, anchor)
     _assert_near_bar(prop.positions["B"], bpm, 0, anchor)
-    _assert_near_bar(prop.positions["C"], bpm, 16, anchor)
+    _assert_near_bar(prop.positions["C"], bpm, 24, anchor)
     _assert_near_bar(prop.positions["D"], bpm, 32, anchor)
     _assert_near_bar(prop.positions["E"], bpm, 64, anchor)
     _assert_near_bar(prop.positions["F"], bpm, 80, anchor)
@@ -130,7 +130,29 @@ def test_full_layout():
     for t in prop.positions.values():
         _assert_on_lattice(t, fit.anchor_s, bar_period)
 
-    assert any("off16=+0" in n for n in prop.notes)
+    assert any("off8=+0" in n for n in prop.notes)
+
+
+def test_snap_governed_by_off8():
+    """off8 (+1) governs snap to bar 40; off16 (-7) does not pull toward bar 48."""
+    bpm = 124.0
+    anchor = 1.5
+    y, beats, downbeats = _synth_bass_track(
+        bpm,
+        96,
+        true_anchor=anchor,
+        kick_from_bar=0,
+        bass_bars=range(41, 80),
+    )
+    beat = _beat_analysis(beats, downbeats, bpm, len(y) / SR)
+    fit = fit_grid(y, SR, beats, downbeats, djay_bpm=bpm)
+    prop, _ = propose_cues_bass(y, SR, beat, fit, djay_bpm=bpm)
+
+    _assert_near_bar(prop.positions["D"], bpm, 40, anchor)
+    assert any(
+        "D: raw bar 41, off8=+1, off16=-7," in n and "snapped to bar 40" in n
+        for n in prop.notes
+    )
 
 
 def test_snap_plus_one():
@@ -147,7 +169,9 @@ def test_snap_plus_one():
     prop, _ = propose_cues_bass(y, SR, beat, fit, djay_bpm=bpm)
 
     _assert_near_bar(prop.positions["D"], bpm, 32, anchor)
-    assert "D: raw bar 33, off16=+1, off32=+1, snapped to bar 32" in prop.notes
+    assert (
+        "D: raw bar 33, off8=+1, off16=+1, off32=+1, snapped to bar 32" in prop.notes
+    )
 
 
 def test_off_phrase_flag():
@@ -229,7 +253,7 @@ def test_gate_refused_fallback():
     prop, bass = propose_cues_bass(y, SR, beat, fit)
     assert bass.snapped is False
     assert any("phrase snapping disabled" in n for n in prop.notes)
-    assert not any("off16=" in n for n in prop.notes)
+    assert not any("off8=" in n for n in prop.notes)
     assert len(prop.positions) >= 2
     _assert_near_bar(prop.positions["D"], bpm, 32)
 
@@ -251,7 +275,29 @@ def test_pad_intro():
 
     _assert_near_bar(prop.positions["A"], bpm, 8, anchor)
     _assert_near_bar(prop.positions["D"], bpm, 40, anchor)
-    assert any("off16=+0" in n for n in prop.notes)
+    assert any("off8=+0" in n for n in prop.notes)
+
+
+def test_breakdown_skips_short_dip():
+    """4-bar dropout at bar 64 is skipped; 8-bar dropout at 76 becomes E."""
+    bpm = 124.0
+    anchor = 1.5
+    y, beats, downbeats = _synth_bass_track(
+        bpm,
+        96,
+        true_anchor=anchor,
+        bass_bars=tuple(
+            list(range(32, 64)) + list(range(68, 76)) + list(range(84, 94))
+        ),
+    )
+    beat = _beat_analysis(beats, downbeats, bpm, len(y) / SR)
+    fit = fit_grid(y, SR, beats, downbeats, djay_bpm=bpm)
+    prop, _ = propose_cues_bass(y, SR, beat, fit, djay_bpm=bpm)
+
+    _assert_near_bar(prop.positions["D"], bpm, 32, anchor)
+    _assert_near_bar(prop.positions["E"], bpm, 76, anchor)
+    _assert_near_bar(prop.positions["F"], bpm, 84, anchor)
+    assert "E" not in prop.positions or prop.positions["E"] != _bar_time(bpm, 64, anchor)
 
 
 def test_short_track():

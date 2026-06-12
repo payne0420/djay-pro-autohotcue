@@ -14,9 +14,9 @@ BASS_ON_FRAC = 0.75
 BASS_OFF_FRAC = 0.55
 DROP_MIN_ON_BARS = 8
 PRE_DROP_MIN_OFF_BARS = 4
-BREAK_MIN_OFF_BARS = 4
+BREAK_MIN_OFF_BARS = 8
 RETURN_MIN_ON_BARS = 8
-PHRASE_BARS = 16
+PHRASE_BARS = 8
 SNAP_MAX_BARS = 2
 A_MIN_FRAC = 0.25
 LOUD_REF_PCTL = 90.0
@@ -148,12 +148,15 @@ def _snap_bar(bar: int, origin: int) -> tuple[int, int]:
 
 
 def _event_note(slot: str, raw_bar: int, origin: int, final_bar: int) -> str:
-    off16 = _phrase_offset(raw_bar, origin, PHRASE_BARS)
+    off8 = _phrase_offset(raw_bar, origin, PHRASE_BARS)
+    off16 = _phrase_offset(raw_bar, origin, 16)
     off32 = _phrase_offset(raw_bar, origin, 32)
-    prefix = f"{slot}: raw bar {raw_bar}, off16={off16:+d}, off32={off32:+d}, "
+    prefix = (
+        f"{slot}: raw bar {raw_bar}, off8={off8:+d}, off16={off16:+d}, off32={off32:+d}, "
+    )
     if final_bar != raw_bar:
         return prefix + f"snapped to bar {final_bar}"
-    if abs(off16) > SNAP_MAX_BARS:
+    if abs(off8) > SNAP_MAX_BARS:
         return prefix + "off-phrase (unsnapped)"
     return prefix + f"at bar {final_bar}"
 

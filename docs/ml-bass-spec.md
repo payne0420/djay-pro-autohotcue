@@ -2,7 +2,8 @@
 
 Implements `docs/roadmap/02-placement-engine-redesign.md`. New engine `ml-bass`:
 cues come from kick-band (30–150 Hz) bass-in/bass-out/bass-return detection plus
-16/32-bar phrase snapping on the grid-locked lattice from `gridlock.fit_grid`.
+8-bar phrase snapping on the grid-locked lattice from `gridlock.fit_grid`
+(16/32-bar offsets are reported in notes for diagnostics only).
 The structure backends (librosa Laplacian / all-in-one-mlx) are NOT used by this
 engine — no `segment_structure` call at all.
 
@@ -41,9 +42,9 @@ BASS_ON_FRAC = 0.75        # ON threshold, fraction of loud_ref
 BASS_OFF_FRAC = 0.55       # hysteresis OFF threshold (must be < BASS_ON_FRAC)
 DROP_MIN_ON_BARS = 8       # bass-in must sustain this long to be D
 PRE_DROP_MIN_OFF_BARS = 4  # bars of bass-absence required before a drop
-BREAK_MIN_OFF_BARS = 4     # bass-out must sustain this long to be E
+BREAK_MIN_OFF_BARS = 8     # bass-out must sustain this long to be E
 RETURN_MIN_ON_BARS = 8     # bass-return must sustain this long to be F
-PHRASE_BARS = 16           # snapping lattice (32-bar boundaries are also 16-bar)
+PHRASE_BARS = 8            # snapping lattice (16/32-bar offsets still reported)
 SNAP_MAX_BARS = 2          # max distance moved by phrase snapping
 A_MIN_FRAC = 0.25          # A = first bar with kick RMS >= this * loud_ref
 OUTRO_MIN_BARS = 2         # G must leave >= 2 bars (8 beats) before track end
@@ -108,7 +109,8 @@ def propose_cues_bass(
   A track whose bass is on from (near) the start has no such transition →
   **omit D** with note `"D (Drop): omitted (no bass-in transition)"`.
 - **E (Breakdown)** = start bar of the first OFF-run with length >=
-  `BREAK_MIN_OFF_BARS` that starts after D. Omit (with note) when D omitted or
+  `BREAK_MIN_OFF_BARS` (8 bars) that starts after D. Short bass dips (< 8 bars)
+  are skipped so the real breakdown is cued. Omit (with note) when D omitted or
   no candidate.
 - **F (2nd Drop)** = start bar of the first ON-run with length >=
   `RETURN_MIN_ON_BARS` that starts after E. Omit (with note) when E omitted or
@@ -131,17 +133,20 @@ def propose_cues_bass(
 
 ### Phrase snapping (active only when `fit.ok`)
 
-- `phrase_origin` = A's bar index `a0`. Phrase boundaries = `a0 + k * PHRASE_BARS`.
+- `phrase_origin` = A's bar index `a0`. Phrase boundaries = `a0 + k * PHRASE_BARS`
+  (8-bar lattice; corpus evidence: 85% of raw drops land within 1 bar of an
+  8-bar boundary vs 59% for 16-bar).
 - For each detected event in {D, E, F, G} with raw bar index `b`: let `d` =
-  signed distance to the nearest boundary. If `|d| <= SNAP_MAX_BARS`, move the
-  event to that boundary; otherwise keep `b` (flag, don't force).
+  signed distance to the nearest 8-bar boundary. If `|d| <= SNAP_MAX_BARS`, move
+  the event to that boundary; otherwise keep `b` (flag, don't force).
 - Every detected D/E/F gets a machine-greppable note with the RAW (pre-snap)
-  bar and offsets to the nearest 16- and 32-bar boundary (32-bar lattice =
-  `a0 + k * 32`), e.g.:
-  `"D: raw bar 33, off16=+1, off32=+1, snapped to bar 32"` or
-  `"D: raw bar 37, off16=+5, off32=+5, off-phrase (unsnapped)"`.
-  Exact prefix format `"{slot}: raw bar {b}, off16={d:+d}, off32={d:+d}, "` —
-  the corpus statistics run greps these.
+  bar and offsets to the nearest 8-, 16-, and 32-bar boundaries, e.g.:
+  `"D: raw bar 33, off8=+1, off16=+1, off32=+1, snapped to bar 32"` or
+  `"D: raw bar 37, off8=-3, off16=+5, off32=+5, off-phrase (unsnapped)"`.
+  Exact prefix format
+  `"{slot}: raw bar {b}, off8={d8:+d}, off16={d16:+d}, off32={d32:+d}, "` —
+  the corpus statistics run greps these. `off8` is relative to `PHRASE_BARS`;
+  `off16`/`off32` use fixed 16/32-bar lattices from the phrase origin.
 - Positions are `bar_starts[index]` of the final (snapped) bar — already on
   djay's rendered lattice when `fit.ok`.
 
@@ -227,28 +232,30 @@ def _synth_bass_track(bpm, bars, *, true_anchor=1.5, bass_bars=(), kick=0.9,
 Required cases (assert positions in seconds within half a bar unless stated):
 
 1. **Full layout**: 124 BPM, 96 bars, kick from bar 0, bass on `[32, 64)` and
-   `[80, 92)`. Expect A=B=bar 0, C=bar 16, D=bar 32 (off16=0), E=bar 64,
+   `[80, 92)`. Expect A=B=bar 0, C=bar 24 (D−8), D=bar 32 (off8=0), E=bar 64,
    F=bar 80, G=H=bar 92 (trailing off-run); fit.ok true; all positions on the
    lattice (`(t - anchor) / bar_period` integral within 1e-6).
 2. **Snap +1**: bass-in at bar 33 → D snapped to bar 32; note contains
-   `"raw bar 33"` and `"off16=+1"`.
+   `"raw bar 33"` and `"off8=+1"`.
 3. **Off-phrase flag**: bass-in at bar 37 → D stays at bar 37; note contains
    `"off-phrase"`.
 4. **No transition**: bass on from bar 0 to end → D/E/F omitted with notes;
    A/B present; G at last phrase boundary; monotonic.
 5. **Hysteresis**: single 1-bar dip inside the groove (one bar without bass) →
-   no E at that bar (first qualifying E is a later >= 4-bar dropout or absent).
-6. **Gate-refused fallback**: hand-built `GridFit(ok=False, reason="phase jumps
+   no E at that bar (first qualifying E is a later >= 8-bar dropout or absent).
+6. **Breakdown skips short dip**: 4-bar bass dropout skipped; >= 8-bar dropout
+   becomes E; return after E becomes F (deterministic D/E/F bars).
+7. **Gate-refused fallback**: hand-built `GridFit(ok=False, reason="phase jumps
    between sections (spliced edit?)", ...)` → proposal still produced from model
    downbeats; `snapped` False; a note contains `"phrase snapping disabled"`; no
-   `off16=` notes.
-7. **Pad intro**: pad on bars 0–7 (no kick), kick from bar 8, bass from bar 40
-   → A=bar 8, D=bar 40 (off16=0 relative to phrase origin 8).
-8. **Short track**: 12 bars → only A/B, with the short-track note.
-9. **Wiring**: `normalize_engine("ml-bass") == ("ml-bass", None)`;
+   `off8=` notes.
+8. **Pad intro**: pad on bars 0–7 (no kick), kick from bar 8, bass from bar 40
+   → A=bar 8, D=bar 40 (off8=0 relative to phrase origin 8).
+9. **Short track**: 12 bars → only A/B, with the short-track note.
+10. **Wiring**: `normalize_engine("ml-bass") == ("ml-bass", None)`;
    `"ml-bass" in VALID_ENGINES`; `effective_parallel_jobs("ml-bass", 4) == 4`;
    `cli._ENGINE_CHOICES` contains `"ml-bass"` and `cli._is_ml_engine("ml-bass")`.
-10. **Ordering**: in case 1's proposal, assert A <= B <= C < D < E < F <= G == H.
+11. **Ordering**: in case 1's proposal, assert A <= B <= C < D < E < F <= G == H.
 
 E2E (`tests/test_e2e.py`): add one ml-bass case parametrized over the existing
 `E2E_TRACKS`, with the same missing-file skip guard — run
