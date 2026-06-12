@@ -106,10 +106,18 @@ Alternatives evaluated and rejected:
 6. **Label mapping**: output labels `intro` / `verse` / `chorus` / `bridge` / `inst` /
    `outro`; `pre-chorus` → `verse`; `silence` segments dropped.
 
-## Status / pending
+## Status / open threads
 
-- Quantitative bench comparison (`ml` vs `ml-allin1` vs `ml-songformer`) is blocked on
-  the ground-truth labeling task (`truth.json` does not exist yet).
-- Qualitative check on Afro House tracks shows musically sensible cue layouts (Drop on
-  the first chorus, Breakdown on the bridge).
-- MPS / fp16 / window-size performance tuning is deferred.
+Both open threads have self-contained roadmap briefs:
+
+- **Quantitative bench** (`ml` vs `ml-allin1` vs `ml-songformer`) — blocked on the
+  ground-truth labeling task (`truth.json` does not exist yet); plan and decision rule in
+  [docs/roadmap/03-songformer-bench.md](roadmap/03-songformer-bench.md). Until then the
+  evidence is qualitative: musically sensible cue layouts on Afro House tracks (Drop on
+  the first chorus, Breakdown on the bridge) plus the paper's boundary numbers.
+- **Memory / speed fix via the bundled SDPA attention** — the only known route below the
+  ~24 GB peak without quality loss; activation recipe, failure analysis, and acceptance
+  criteria in [docs/roadmap/07-songformer-flash-memory.md](roadmap/07-songformer-flash-memory.md).
+  **Off-machine work only** (a first attempt swap-thrashed a 32 GB machine). MPS support
+  rides on this item; until it lands, CPU f32 with the kernel ceiling is the only
+  supported configuration.
