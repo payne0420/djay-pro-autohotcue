@@ -64,8 +64,8 @@ def _pool_initargs(jobs: int) -> tuple:
     return (jobs,)
 
 
-def _bpm_for(db: djaydb.DjayDB, key: str, fallback: float | None) -> float:
-    """Pull djay's analyzed BPM for the track if present."""
+def _bpm_from_key(db: djaydb.DjayDB, key: str, fallback: float | None) -> float | None:
+    """Pull djay's analyzed BPM for the track when present; else ``fallback``."""
     from autohotcue import tsaf
 
     doc = db.get("mediaItemAnalyzedData", key)
@@ -73,14 +73,45 @@ def _bpm_for(db: djaydb.DjayDB, key: str, fallback: float | None) -> float:
         bpm = doc.root.get("bpm")
         if isinstance(bpm, tsaf.F32):
             return bpm.value
-    if fallback:
-        return fallback
+    return fallback
+
+
+def _bpm_for(db: djaydb.DjayDB, key: str, fallback: float | None) -> float:
+    """Like ``_bpm_from_key`` but required for apply pre-checks."""
+    bpm = _bpm_from_key(db, key, fallback)
+    if bpm is not None:
+        return bpm
     raise _Skip("no BPM in djay analysis and --bpm not given; analyze in djay first")
 
 
 def _djay_running() -> bool:
     out = subprocess.run(["pgrep", "-x", "djay Pro"], capture_output=True, text=True)
     return out.returncode == 0
+
+
+_ENGINE_CHOICES = ("ml", "ml-librosa", "ml-allin1", "legacy")
+_ML_ENGINES = frozenset({"ml", "ml-librosa", "ml-allin1"})
+
+
+def _is_ml_engine(engine: str) -> bool:
+    return engine in _ML_ENGINES
+
+
+def _grid_lock_enabled(args) -> bool:
+    return _is_ml_engine(args.engine) and not getattr(args, "no_grid_lock", False)
+
+
+def _print_grid_fit(track: analysis.TrackAnalysis) -> None:
+    fit = track.grid_fit
+    if fit is None:
+        return
+    if fit.ok:
+        print(
+            f"grid: bpm={fit.bpm:.2f} render={fit.render_bpm:g} "
+            f"anchor={fit.anchor_s:.3f}s fit={fit.beat_fit:.4f} ok"
+        )
+    else:
+        print(f"grid: SKIP — {fit.reason}")
 
 
 def _print_proposal(track: analysis.TrackAnalysis, prop: analysis.CueProposal) -> None:
@@ -95,6 +126,19 @@ def _print_proposal(track: analysis.TrackAnalysis, prop: analysis.CueProposal) -
             print(f"  {pad} {djaydb.CUE_LABELS[ord(pad)-65]:16s} {int(m)}:{s:05.2f} ({t:.3f}s)")
     for note in prop.notes:
         print("  -", note)
+    _print_grid_fit(track)
+
+
+def _djay_bpm_for_path(db: djaydb.DjayDB | None, path: str, fallback: float | None) -> float | None:
+    if db is None:
+        return fallback
+    try:
+        key = db.find_track_by_path(path)
+        if key is None:
+            return fallback
+        return _bpm_from_key(db, key, fallback)
+    except (ValueError, sqlite3.OperationalError):
+        return fallback
 
 
 def cmd_propose(args):
@@ -102,54 +146,59 @@ def cmd_propose(args):
     batch = Path(args.path).is_dir()
     jobs = analysis.effective_parallel_jobs(args.engine, _resolve_jobs(args.jobs))
     failed = 0
-    if batch and jobs > 1 and len(paths) > 1:
-        with concurrent.futures.ProcessPoolExecutor(
-            max_workers=jobs,
-            initializer=backends.init_worker,
-            initargs=_pool_initargs(jobs),
-        ) as ex:
-            futs = {
-                ex.submit(
-                    analysis.analyze,
-                    p,
-                    args.bpm,
-                    args.engine,
-                    None,
-                    jobs,
-                ): p
-                for p in paths
-            }
-            for fut in concurrent.futures.as_completed(futs):
-                print(f"\n{Path(futs[fut]).name}")
+    db = djaydb.DjayDB(args.library) if args.library else None
+    try:
+        if batch and jobs > 1 and len(paths) > 1:
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=jobs,
+                initializer=backends.init_worker,
+                initargs=_pool_initargs(jobs),
+            ) as ex:
+                futs = {
+                    ex.submit(
+                        analysis.analyze,
+                        p,
+                        _djay_bpm_for_path(db, p, args.bpm),
+                        args.engine,
+                        None,
+                        jobs,
+                    ): p
+                    for p in paths
+                }
+                for fut in concurrent.futures.as_completed(futs):
+                    print(f"\n{Path(futs[fut]).name}")
+                    try:
+                        track, prop = fut.result()
+                    except Exception as e:
+                        print(f"  FAILED: {e}")
+                        failed += 1
+                        continue
+                    _print_proposal(track, prop)
+        else:
+            if jobs == 1:
+                backends.init_worker(1)
+            for path in paths:
+                if batch:
+                    print(f"\n{Path(path).name}", flush=True)
                 try:
-                    track, prop = fut.result()
+                    track, prop = analysis.analyze(
+                        path,
+                        known_bpm=_djay_bpm_for_path(db, path, args.bpm),
+                        engine=args.engine,
+                        jobs=1,
+                    )
                 except Exception as e:
+                    if not batch:
+                        raise
                     print(f"  FAILED: {e}")
                     failed += 1
                     continue
                 _print_proposal(track, prop)
-    else:
-        if jobs == 1:
-            backends.init_worker(1)
-        for path in paths:
-            if batch:
-                print(f"\n{Path(path).name}", flush=True)
-            try:
-                track, prop = analysis.analyze(
-                    path,
-                    known_bpm=args.bpm,
-                    engine=args.engine,
-                    jobs=1,
-                )
-            except Exception as e:
-                if not batch:
-                    raise
-                print(f"  FAILED: {e}")
-                failed += 1
-                continue
-            _print_proposal(track, prop)
-    if batch:
-        print(f"\n{len(paths) - failed} analyzed, {failed} failed ({len(paths)} files)")
+        if batch:
+            print(f"\n{len(paths) - failed} analyzed, {failed} failed ({len(paths)} files)")
+    finally:
+        if db is not None:
+            db.close()
 
 
 def cmd_viz(args):
@@ -201,14 +250,40 @@ def _precheck_one(db: djaydb.DjayDB, path: str, args):
     return key, existing, _bpm_for(db, key, args.bpm)
 
 
-def _write_one(db: djaydb.DjayDB, key: str, existing, prop, ensure_backup) -> int:
+def _has_beat_grid_edits(existing) -> bool:
+    return existing is not None and existing.root.get("beatGridEdits") is not None
+
+
+def _write_one(
+    db: djaydb.DjayDB,
+    key: str,
+    existing,
+    track: analysis.TrackAnalysis,
+    prop,
+    ensure_backup,
+    *,
+    grid_lock: bool,
+    force: bool,
+) -> int:
     """Build the cue record from an analysis result and write it. Main thread
     only — this is the sole place apply touches the database after pre-checks."""
     from autohotcue import tsaf
+    from autohotcue.gridlock import snap_cues
+
+    positions = dict(prop.positions)
+    write_grid = False
+    fit = track.grid_fit
+    if grid_lock and fit is not None:
+        if fit.ok:
+            if not _has_beat_grid_edits(existing) or force:
+                positions = snap_cues(positions, fit)
+                write_grid = True
+        else:
+            print(f"  grid: SKIP — {fit.reason}")
 
     cues = []
     for i, pad in enumerate("ABCDEFGH"):
-        t = prop.positions.get(pad)
+        t = positions.get(pad)
         if t is not None:
             cues.append({"time": t, "number": i, "comment": djaydb.CUE_LABELS[i]})
     if not cues:
@@ -225,11 +300,17 @@ def _write_one(db: djaydb.DjayDB, key: str, existing, prop, ensure_backup) -> in
         doc = existing
         doc.root.set("cuePoints", tsaf.Arr(tsaf.TAG_ARRAY_A, djaydb.build_cue_objects(cues)))
         djaydb.ensure_cloud_key(doc.root, "cuePoints")
+        if write_grid:
+            doc.root.set("beatGridEdits", djaydb.build_beat_grid_edits(fit.anchor_s))
+            djaydb.ensure_cloud_key(doc.root, "beatGridEdits")
     else:
         tid = db.get("mediaItemTitleIDs", key)
         if tid is None:
             raise _Skip("no titleID record for this track; cannot build cue record")
         doc = djaydb.build_user_data(key, tid.root, cues)
+        if write_grid:
+            doc.root.set("beatGridEdits", djaydb.build_beat_grid_edits(fit.anchor_s))
+            djaydb.ensure_cloud_key(doc.root, "beatGridEdits")
 
     db.put("mediaItemUserData", key, doc)
     return len(cues)
@@ -241,6 +322,7 @@ def _apply_parallel(db, paths, args, ensure_backup, jobs):
     completes. Worker processes never see the database."""
     total = len(paths)
     written = skipped = failed = 0
+    grid_lock = _grid_lock_enabled(args)
     todo = []
     for i, path in enumerate(paths, 1):
         try:
@@ -275,7 +357,10 @@ def _apply_parallel(db, paths, args, ensure_backup, jobs):
                 print(f"[{i}/{total}] {Path(path).name}", flush=True)
                 try:
                     track, prop = fut.result()
-                    n = _write_one(db, key, existing, prop, ensure_backup)
+                    n = _write_one(
+                        db, key, existing, track, prop, ensure_backup,
+                        grid_lock=grid_lock, force=args.force,
+                    )
                 except _Skip as e:
                     print(f"  skip: {e}")
                     skipped += 1
@@ -313,6 +398,7 @@ def cmd_apply(args):
 
     total = len(paths)
     written = skipped = failed = 0
+    grid_lock = _grid_lock_enabled(args)
     try:
         if batch and jobs > 1 and total > 1:
             written, skipped, failed = _apply_parallel(db, paths, args, ensure_backup, jobs)
@@ -331,7 +417,10 @@ def cmd_apply(args):
                         engine=args.engine,
                         jobs=1,
                     )
-                    n = _write_one(db, key, existing, prop, ensure_backup)
+                    n = _write_one(
+                        db, key, existing, track, prop, ensure_backup,
+                        grid_lock=grid_lock, force=args.force,
+                    )
                 except _Skip as e:
                     if not batch:
                         raise SystemExit(str(e)) from None
@@ -386,10 +475,12 @@ def cmd_verify(args):
             num = cp.get("number")
             n = num.value if isinstance(num, tsaf.Int) else (0 if num.tag == 0x2D else 1)
             print(f"  {chr(65+n)} {cp.get('comment') or '':16s} {cp.get('time').value:.3f}s")
+        bge = doc.root.get("beatGridEdits")
+        if isinstance(bge, tsaf.Obj):
+            pos = bge.get("firstDownbeatPosition")
+            if isinstance(pos, tsaf.F32):
+                print(f"  grid anchor: {pos.value:.3f}s")
     db.close()
-
-
-_ENGINE_CHOICES = ("ml", "ml-librosa", "ml-allin1", "legacy")
 
 
 def _add_engine_arg(sp):
@@ -431,6 +522,11 @@ def main(argv=None):
     sp.add_argument("--library", default=None)
     sp.add_argument("--backup-dir", default=None)
     sp.add_argument("--force", action="store_true")
+    sp.add_argument(
+        "--no-grid-lock",
+        action="store_true",
+        help="do not write beatGridEdits or snap cues to the fitted grid (ml engines only)",
+    )
     sp.add_argument("-j", "--jobs", type=int, default=1, help=jobs_help)
     _add_engine_arg(sp)
 

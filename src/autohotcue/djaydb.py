@@ -56,6 +56,18 @@ def _path_variants(path: str) -> set[str]:
     return {unicodedata.normalize("NFC", v) for v in variants}
 
 
+def build_beat_grid_edits(anchor_s: float) -> tsaf.Obj:
+    """Build ``ADCBeatGridEdits`` for djay's manual grid anchor."""
+    obj = tsaf.Obj("ADCBeatGridEdits")
+    obj.fields.append(("firstDownbeatPosition", tsaf.F32.of(anchor_s)))
+    obj.fields.append(("nrOfBeatShift", tsaf.Marker(tsaf.TAG_M2E)))
+    obj.fields.append(("downbeatMarkers", tsaf.Arr(tsaf.TAG_ARRAY_A, [])))
+    obj.fields.append(("firstGridSegmentTempoExponent", tsaf.Marker(tsaf.TAG_M2E)))
+    obj.fields.append(("lastGridSegmentTempoExponent", tsaf.Marker(tsaf.TAG_M2E)))
+    obj.fields.append(("fractionalBeatShift", tsaf.F32.of(0.0)))
+    return obj
+
+
 def build_cue_objects(cues: list[dict]) -> list[tsaf.Obj]:
     """Build ``ADCCuePoint`` objects (sorted by slot) from cue dicts.
 

@@ -170,9 +170,20 @@ def test_apply_verify_roundtrip(tmp_path):
                 db.backup(tmp_path / "backups")
                 backed["done"] = True
 
-        n = _write_one(db, key, existing, prop, ensure_backup)
+        from autohotcue.gridlock import snap_cues
+
+        n = _write_one(
+            db, key, existing, track, prop, ensure_backup,
+            grid_lock=True, force=True,
+        )
         assert n > 0
         db.checkpoint()
+
+        expected = (
+            snap_cues(prop.positions, track.grid_fit)
+            if track.grid_fit is not None and track.grid_fit.ok
+            else prop.positions
+        )
 
         doc = db.get("mediaItemUserData", key)
         assert doc is not None
@@ -185,7 +196,7 @@ def test_apply_verify_roundtrip(tmp_path):
             letter = chr(65 + idx)
             stored[letter] = float(cp.get("time").value)
 
-        for letter, t in prop.positions.items():
+        for letter, t in expected.items():
             assert letter in stored, f"missing cue {letter} after apply"
             assert stored[letter] == pytest.approx(t, abs=1e-3), (
                 f"{letter}: stored {stored[letter]} != proposed {t}"
