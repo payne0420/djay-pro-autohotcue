@@ -6,6 +6,7 @@ CPU forward pass peaks at ~24 GB RSS (420 s windows, f32); set AUTOHOTCUE_SONGFO
 from __future__ import annotations
 
 import importlib.machinery
+import math
 import os
 import resource
 import sys
@@ -84,7 +85,7 @@ def _apply_memory_ceiling() -> None:
         ceiling_gb = float(mem_gb)
     except ValueError:
         return
-    if ceiling_gb == 0:
+    if not math.isfinite(ceiling_gb) or ceiling_gb <= 0:
         return
     ceiling_bytes = int(ceiling_gb * 1024**3)
     try:
@@ -204,7 +205,9 @@ def segment_structure_songformer(
                 raw_segments = model(waveform)
         except (MemoryError, RuntimeError) as exc:
             if isinstance(exc, MemoryError) or any(
-                token in str(exc).lower() for token in ("allocate", "memory")
+                token in str(exc).lower()
+                for token in ("out of memory", "can't allocate", "failed to allocate",
+                              "not enough memory")
             ):
                 raise RuntimeError(
                     "SongFormer analysis needs up to ~24 GB free RAM; close memory-heavy "

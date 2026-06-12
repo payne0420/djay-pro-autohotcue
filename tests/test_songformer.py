@@ -282,3 +282,34 @@ def test_segment_structure_songformer_plumbing(monkeypatch):
     assert out.segments[-1].end == 2.0
     assert out.source == "songformer"
     assert all(0.0 <= s.energy_rank <= 1.0 for s in out.segments)
+
+
+def test_apply_memory_ceiling_nan_inf_are_noops(monkeypatch):
+    import resource
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(resource, "setrlimit", lambda which, limits: calls.append((which, limits)))
+    for value in ("nan", "inf", "-inf", "-5"):
+        monkeypatch.setenv("AUTOHOTCUE_SONGFORMER_MEM_GB", value)
+        _apply_memory_ceiling()
+    assert calls == []
+
+
+def test_segment_structure_songformer_non_memory_runtime_error_passes_through(monkeypatch):
+    import autohotcue._songformer as mod
+
+    class FakeModel:
+        def __call__(self, waveform):
+            raise RuntimeError("invalid memory format strides mismatch")
+
+    monkeypatch.setattr(mod, "_get_model", lambda _device: FakeModel())
+    y = np.zeros(44100, dtype=np.float32)
+    beat = BeatAnalysis(
+        bpm=120.0,
+        beats=np.linspace(0.0, 1.0, 3),
+        downbeats=np.array([0.0, 1.0]),
+        duration_s=1.0,
+        source="test",
+    )
+    with pytest.raises(RuntimeError, match="strides mismatch"):
+        segment_structure_songformer("track.wav", y, 44100, beat)
