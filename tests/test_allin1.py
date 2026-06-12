@@ -14,12 +14,11 @@ from autohotcue._allin1 import (
     ALLIN1_LABELS,
     _AllInOneForwardWrapper,
     _WEIGHTS_MARKER,
-    _energy_ranks_for_segments,
     _map_allin1_segments,
     resolve_weights_dir,
     segment_structure_allin1,
 )
-from autohotcue.backends import BeatAnalysis, Segment
+from autohotcue.backends import BeatAnalysis, Segment, energy_ranks_for_segments
 
 
 def test_normalize_engine_aliases():
@@ -131,7 +130,7 @@ def test_energy_ranks_per_track():
         Segment(1.0, 2.0, "chorus"),
         Segment(2.0, 3.0, "break"),
     ]
-    ranked = _energy_ranks_for_segments(y, 44100, segs)
+    ranked = energy_ranks_for_segments(y, 44100, segs)
     assert len(ranked) == 3
     assert all(0.0 <= s.energy_rank <= 1.0 for s in ranked)
     assert ranked[0].label == "intro"
@@ -145,14 +144,14 @@ def test_energy_ranks_partial_tail_slice(monkeypatch):
     n_frames = 10
     low = np.linspace(0.1, 1.0, n_frames, dtype=np.float64)
     monkeypatch.setattr(
-        "autohotcue._allin1.band_energy",
+        "autohotcue.backends.band_energy",
         lambda _y, _sr, _hop: (low, None, None, None),
     )
     segs = [
         Segment(0.0, 0.05, "intro"),
         Segment(0.1, 5.0, "outro"),
     ]
-    ranked = _energy_ranks_for_segments(np.zeros(sr), sr, segs)
+    ranked = energy_ranks_for_segments(np.zeros(sr), sr, segs)
     assert len(ranked) == 2
     i0 = int(0.1 * sr / HOP)
     i1 = max(i0 + 1, int(5.0 * sr / HOP))

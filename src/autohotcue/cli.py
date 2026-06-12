@@ -389,7 +389,7 @@ def cmd_verify(args):
     db.close()
 
 
-_ENGINE_CHOICES = ("ml", "ml-librosa", "ml-allin1", "legacy")
+_ENGINE_CHOICES = ("ml", "ml-librosa", "ml-allin1", "ml-songformer", "legacy")
 
 
 def _add_engine_arg(sp):
@@ -398,7 +398,8 @@ def _add_engine_arg(sp):
         choices=_ENGINE_CHOICES,
         default="ml",
         help="analysis engine: ml/ml-librosa (librosa structure), "
-        "ml-allin1 (all-in-one-mlx structure), legacy (default: ml)",
+        "ml-allin1 (all-in-one-mlx structure), ml-songformer (SongFormer structure, CPU), "
+        "legacy (default: ml)",
     )
 
 
