@@ -165,9 +165,10 @@ def test_djay_bpm_for_path_operational_error_returns_fallback(tmp_path):
     """Broken library reads must degrade on propose, not crash."""
     track = tmp_path / "track.opus"
     track.write_bytes(b"")
-    db_path = _library_db(tmp_path, str(track))
+    db_path = tmp_path / "MediaLibrary.db"
+    conn = sqlite3.connect(db_path)
+    conn.close()
     db = djaydb.DjayDB(db_path)
-    db_path.unlink()
     try:
         assert _djay_bpm_for_path(db, str(track), 128.0) == 128.0
     finally:
