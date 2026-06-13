@@ -1,7 +1,7 @@
 """Kick-band bass events + phrase snapping for ml-bass cue placement."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -301,6 +301,10 @@ def _finalize_g_bar(
     for bar in candidates:
         if not _g_bar_valid(bar, earlier_max):
             continue
+        if bar > last_audible:
+            # Snapping must not push G past the audible tail (or off bar_starts:
+            # a boundary can sit at n_bars, one past the last lattice index).
+            continue
         if preferred_path and last_audible - bar < OUTRO_TAIL_BARS:
             continue
         return bar, _event_note("G", raw_bar, origin, bar)
@@ -390,7 +394,7 @@ def _detect_outro_g_bar(
             return phrase_g, None
 
     for raw in _legacy_outro_candidates(bass_on, n_bars, origin, lattice_locked):
-        if _g_bar_valid(raw, earlier_max):
+        if _g_bar_valid(raw, earlier_max) and raw <= last_audible:
             return raw, "G/H (Outro): short tail; using legacy placement"
     return None, None
 
@@ -460,7 +464,7 @@ def propose_cues_bass(
         p.positions["A"] = a_t
         p.positions["B"] = a_t
         p.notes.append("no kick-band energy detected; first beat only")
-        return p, bass
+        return p, replace(bass, snapped=False)
 
     if n_bars < MIN_BARS:
         a_idx = _first_a_bar(bass.kick_rms, bass.loud_ref)
@@ -468,7 +472,7 @@ def propose_cues_bass(
         p.positions["A"] = a_t
         p.positions["B"] = a_t
         p.notes.append("track too short for bass structure analysis; first beat only")
-        return p, bass
+        return p, replace(bass, snapped=False)
 
     a_idx = _first_a_bar(bass.kick_rms, bass.loud_ref)
     phrase_origin = a_idx
@@ -497,12 +501,21 @@ def propose_cues_bass(
 
     d_bar = e_bar = f_bar = g_bar = h_bar = None
     c_bar = None
+    d_note = ""
+
+    if d_raw is not None:
+        d_bar, d_note = _finalize_event_bar("D", d_raw, phrase_origin, lattice_locked)
+        if d_bar <= a_idx:
+            # A raw drop within SNAP_MAX_BARS of A snaps back onto A's bar; a drop
+            # on top of the loop-in is not a drop. Omit D and its dependents.
+            d_raw = e_raw = f_raw = None
+            d_bar = None
+            d_coincides_a = True
 
     if d_coincides_a:
         p.notes.append("D (Drop): omitted (coincides with A)")
 
-    if d_raw is not None:
-        d_bar, d_note = _finalize_event_bar("D", d_raw, phrase_origin, lattice_locked)
+    if d_bar is not None:
         p.positions["D"] = float(bar_starts[d_bar])
         if lattice_locked:
             p.notes.append(d_note)

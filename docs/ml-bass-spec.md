@@ -122,8 +122,11 @@ def propose_cues_bass(
   enough) is never D — the real drop is the payoff/return after a bass-out.
   Omit D with note `"D (Drop): omitted (no qualifying drop; groove only)"` when
   no run qualifies (including tracks whose bass is on from the start with no
-  preceding OFF-run). If a computed D would coincide with A's bar, omit D with a
-  note instead (backstop; should not occur in normal detection).
+  preceding OFF-run). If the FINAL (post-snap) D bar lands at or before A's bar,
+  omit D with note `"D (Drop): omitted (coincides with A)"` and clear C/E/F
+  (backstop). This is checked AFTER phrase snapping, not only on the raw bar: a
+  raw drop within `SNAP_MAX_BARS` of A can snap back onto A's bar, and a drop on
+  top of the loop-in is not a drop.
 - **E (Breakdown)** = start bar of the first OFF-run with length >=
   `BREAK_MIN_OFF_BARS` (8 bars) that starts after D. Short bass dips (< 8 bars)
   are skipped so the real breakdown is cued. Omit (with note) when D omitted or
@@ -164,9 +167,14 @@ def propose_cues_bass(
   `"G/H (Outro): short tail; using legacy placement"`. Snap G on the 8-bar lattice
   (<= 2 bars) only when the snapped bar still satisfies the hard constraint and
   (on the preferred path) still leaves >= `OUTRO_TAIL_BARS` audible bars;
-  otherwise keep the raw bar. If nothing valid remains, omit G and H with the
-  existing note. When lattice-locked, emit the same machine-greppable note
-  prefix as D/E/F.
+  otherwise keep the raw bar. On ALL paths the chosen G bar (snapped or raw) must
+  be `<= last_audible`: snapping must never push G past the last audible bar —
+  which is also the last valid lattice index, since a phrase boundary can sit at
+  `n_bars`, one past `bar_starts` — so G can land neither in the silent tail nor
+  off the lattice (the legacy-path snap is the one that can overshoot). Legacy
+  candidates are likewise required to be `<= last_audible`. If nothing valid
+  remains, omit G and H with the existing note. When lattice-locked, emit the
+  same machine-greppable note prefix as D/E/F.
 - **H (Loop Out)** = the last viable exit loop before the audible tail ends.
   H is the last phrase boundary `b` (8-bar lattice when locked; when not locked,
   scan bar indices downward from `last_audible + 1 - LOOP_OUT_BARS`) such that

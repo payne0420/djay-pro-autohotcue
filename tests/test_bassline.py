@@ -959,6 +959,98 @@ def test_analyze_nudge_anchor(monkeypatch, tmp_path):
         assert args.nudge_beats == 1.0
 
 
+def test_d_snapping_onto_a_is_omitted():
+    """A late drop one bar past a late A snaps onto A; D must be omitted, not stacked.
+
+    Silent intro (bars 0-17) then kick-only bars 18-19 put A (the phrase origin)
+    at bar 18; bass turns on at bar 20, a *late* first bass-in (>= MIN_DROP_FRAC),
+    so the raw drop is bar 20. Snapping pulls bar 20 back onto bar 18 == A. The
+    raw D/A backstop (d_raw == a_idx) does not catch this; the post-snap guard
+    must, or A == B == D would be emitted.
+    """
+    bpm = 124.0
+    anchor = 1.5
+    y, beats, downbeats = _synth_bass_track(
+        bpm,
+        96,
+        true_anchor=anchor,
+        kick_from_bar=18,
+        bass_bars=range(20, 94),
+    )
+    beat = _beat_analysis(beats, downbeats, bpm, len(y) / SR)
+    fit = GridFit(
+        bpm=bpm,
+        render_bpm=bpm,
+        anchor_s=anchor,
+        beat_fit=0.01,
+        bar_resid_std=0.01,
+        splice_jump=0.1,
+        ok=True,
+        reason="ok",
+    )
+    prop, _ = propose_cues_bass(y, SR, beat, fit, djay_bpm=bpm)
+
+    _assert_near_bar(prop.positions["A"], bpm, 18, anchor)
+    assert "D" not in prop.positions
+    assert any("coincides with A" in n for n in prop.notes)
+    _assert_ordering(prop.positions)
+
+
+def test_legacy_g_snap_stays_in_audible_lattice():
+    """Legacy short-tail G must not snap past the audible tail (no IndexError / silence).
+
+    D@40, breakdown@64, 2nd drop (F)@72, then bass off for the last two bars so
+    the trailing bass-out starts at bar 94. F at 72 forces the legacy short-tail
+    path; the raw G candidate (94) snaps to bar 96 — one past the last lattice
+    index on an exact 96-bar lattice — which must be rejected in favour of raw 94.
+    """
+    bpm = 124.0
+    anchor = 1.5
+    y, beats, downbeats = _synth_bass_track(
+        bpm,
+        96,
+        true_anchor=anchor,
+        bass_bars=tuple(
+            list(range(8, 32)) + list(range(40, 64)) + list(range(72, 94))
+        ),
+    )
+    beat = _beat_analysis(beats, downbeats, bpm, len(y) / SR)
+    fit = fit_grid(y, SR, beats, downbeats, djay_bpm=bpm)
+    assert fit.ok, fit.reason
+    prop, bass = propose_cues_bass(y, SR, beat, fit, djay_bpm=bpm)
+
+    _assert_near_bar(prop.positions["F"], bpm, 72, anchor)
+    assert "G" in prop.positions
+    _assert_near_bar(prop.positions["G"], bpm, 94, anchor)
+
+    bar_s = 4 * 60 / bpm
+    g_bar = round((prop.positions["G"] - fit.anchor_s) / bar_s)
+    assert g_bar < len(bass.bar_starts)  # never indexes past bar_starts
+    assert any("short tail; using legacy placement" in n for n in prop.notes)
+    _assert_ordering(prop.positions)
+
+
+def test_snapped_false_on_short_track():
+    """Early returns apply no phrase snapping; snapped must report False even when the
+    grid is locked. A locked fit alone would leave snapped True without the guard."""
+    bpm = 124.0
+    anchor = 1.5
+    y, beats, downbeats = _synth_bass_track(bpm, 12, true_anchor=anchor, bass_bars=range(0, 12))
+    beat = _beat_analysis(beats, downbeats, bpm, len(y) / SR)
+    fit = GridFit(
+        bpm=bpm,
+        render_bpm=bpm,
+        anchor_s=anchor,
+        beat_fit=0.01,
+        bar_resid_std=0.01,
+        splice_jump=0.1,
+        ok=True,
+        reason="ok",
+    )
+    _, bass = propose_cues_bass(y, SR, beat, fit)
+    assert bass.snapped is False
+
+
 def _assert_ordering(pos: dict[str, float]) -> None:
     order = ["A", "B", "C", "D", "E", "F", "G", "H"]
     present = [k for k in order if k in pos]

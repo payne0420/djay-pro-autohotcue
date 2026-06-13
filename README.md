@@ -21,15 +21,19 @@ format directly.
 
 1. **Decode** the track to PCM via ffmpeg (handles opus/ogg/flac/m4a/…).
 2. **Track beats and downbeats** with [beat_this](https://github.com/CPJKU/beat_this)
-   (ISMIR 2024; default `ml` engine). Cue A lands on the first tracked downbeat.
-3. **Segment structure** via librosa Laplacian spectral clustering (default `ml`
-   engine), optional **all-in-one-mlx** (`--engine ml-allin1`, Apple Silicon;
-   `uv sync --extra allin1`), or optional **SongFormer** (`--engine ml-songformer`,
-   CPU; `uv sync --extra songformer`; see `docs/songformer-backend.md`). Segments
-   carry functional labels; energy rank is computed per-track for cue-policy fallbacks.
-4. **Place cues** with a pure policy (`cuepolicy.py`) that maps structure →
-   the 8-cue layout. Every cue snaps to a tracked downbeat. djay's BPM is
-   cross-checked only (never used for placement under `ml`).
+   (ISMIR 2024). Cue A lands on the track's first beat at full level.
+3. **Grid-lock** the tempo (`gridlock.py`): fit a single straight beat grid to the
+   tracked beats/downbeats so every cue sits on djay's rendered lattice. Spliced or
+   ambiguous grids degrade gracefully (placement continues, phrase snapping off).
+4. **Place cues.** The default **`ml-bass`** engine (`bassline.py`) detects
+   kick-band (30–150 Hz) bass-in / bass-out / bass-return events on the grid-locked
+   lattice and snaps them to the 8-bar phrase grid — Afro-House-native structure
+   with no separate segmentation. Alternatively, the structure engines map song-form
+   segments to the layout via a pure policy (`cuepolicy.py`): `--engine ml` /
+   `ml-librosa` (librosa Laplacian clustering), `--engine ml-allin1` (all-in-one-mlx,
+   Apple Silicon; `uv sync --extra allin1`), or `--engine ml-songformer` (SongFormer,
+   CPU; `uv sync --extra songformer`; see `docs/songformer-backend.md`). djay's BPM is
+   cross-checked only, never used for placement.
 5. **Write cues** into djay's `mediaItemUserData` record as `ADCCuePoint`
    objects, serialized in djay's own **TSAF** binary format.
 
@@ -38,16 +42,16 @@ for comparison.
 
 ### The cue layout
 
-| Pad | Cue            | Anchored on |
-|-----|----------------|-------------|
-| A   | First Beat     | first tracked downbeat |
-| B   | Loop In        | end of intro |
-| C   | Vocal / Buildup| segment before drop |
-| D   | Drop           | first high-energy section |
-| E   | Breakdown      | first low-energy section after drop |
-| F   | Special        | second high-energy section |
-| G   | Outro          | outro segment (≥8 beats of audio remain) |
-| H   | Loop Out       | outro start |
+| Pad | Cue        | Placed at (ml-bass default) |
+|-----|------------|-------------|
+| A   | First Beat | first bar at full level |
+| B   | Loop In    | = A |
+| C   | Buildup    | the pre-drop bass-out (build / vocal) |
+| D   | Drop       | the payoff bass-in — a return, or ≥20% into the track (never the groove start) |
+| E   | Breakdown  | first ≥8-bar bass-out after the drop |
+| F   | 2nd Drop   | first ≥8-bar bass-return after the breakdown |
+| G   | Outro      | start of the final mix-out (≥16 audible bars remain) |
+| H   | Loop Out   | last fully-audible 8-bar loop boundary |
 
 ## The TSAF format
 
@@ -67,8 +71,12 @@ First run downloads beat_this model checkpoints (one-time network).
 ```bash
 uv sync
 
-# Analyze and print proposed cues (no writes, no djay needed)
+# Analyze and print proposed cues (no writes, no djay needed).
+# Default engine is ml-bass (kick-band bass events + 8-bar phrase snapping).
 uv run autohotcue propose "/path/to/track.opus"
+
+# librosa song-form structure instead of bass events
+uv run autohotcue propose "/path/to/track.opus" --engine ml
 
 # Optional all-in-one-mlx structure (Apple Silicon; see docs/allin1-backend.md)
 uv sync --extra allin1
@@ -153,11 +161,13 @@ MAE, and runtime per engine using the same BPM yardstick (djay BPM when
 src/autohotcue/
     tsaf.py      # TSAF binary parser + serializer (byte-exact round-trip)
     djaydb.py    # MediaLibrary.db reader/writer, backup, cue record builder
-    backends.py  # beat_this + librosa structure segmentation
-    cuepolicy.py # pure cue-placement policy
+    backends.py  # beat_this + librosa / allin1 / songformer structure backends
+    gridlock.py  # straight beat-grid fit + cue snapping to djay's lattice
+    bassline.py  # ml-bass: kick-band bass events + 8-bar phrase snapping (default)
+    cuepolicy.py # pure structure-based cue-placement policy
     analysis.py  # decode, analyze() dispatcher, legacy path
     bench.py     # ground-truth eval harness
-    viz.py       # waveform + segment spans + cue-map PNG
+    viz.py       # waveform + segment / bass spans + cue-map PNG
     cli.py       # propose / viz / apply / verify / bench
 tests/
     test_tsaf.py # round-trips the entire real library
