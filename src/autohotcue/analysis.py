@@ -323,7 +323,7 @@ def _resolve_device(device: str | None, jobs: int = 1) -> str:
 def analyze(
     path: str,
     known_bpm: float | None = None,
-    engine: str = "ml",
+    engine: str = "ml-bass",
     device: str | None = None,
     jobs: int = 1,
     nudge_beats: float = 0.0,

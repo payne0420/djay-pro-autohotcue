@@ -53,9 +53,9 @@ downloads beat_this model checkpoints (one-time network).
 Run the CLI through uv (no manual venv activation needed):
 
 ```bash
-uv run autohotcue propose "/path/to/track.opus"              # ml engine (default)
+uv run autohotcue propose "/path/to/track.opus"              # ml-bass engine (default)
+uv run autohotcue propose "/path/to/track.opus" --engine ml         # librosa structure
 uv run autohotcue propose "/path/to/track.opus" --engine ml-allin1  # all-in-one structure
-uv run autohotcue propose "/path/to/track.opus" --engine ml-bass   # kick-band + phrase snapping
 uv run autohotcue propose "/path/to/track.opus" --nudge-beats 1     # shift grid anchor +1 beat
 uv run autohotcue propose "/path/to/track.opus" --engine legacy
 uv run autohotcue viz "/path/to/track.opus" map.png          # segments + downbeat ticks
@@ -64,11 +64,12 @@ uv run autohotcue apply "/path/to/track.opus"                # WRITE cues into d
 uv run autohotcue bench truth.json --engines ml,ml-allin1,legacy -j 4
 ```
 
-`--engine {ml,ml-librosa,ml-allin1,ml-bass,legacy}` (default `ml`). `ml` / `ml-librosa` use
-librosa Laplacian structure; `ml-allin1` uses all-in-one-mlx (optional extra;
-see `docs/allin1-backend.md`); `ml-bass` uses kick-band bass events and phrase
-snapping (not the default). djay's BPM is cross-checked only under ml engines;
-placement uses beat_this downbeats. `apply` still writes absolute seconds.
+`--engine {ml-bass,ml,ml-librosa,ml-allin1,legacy}` (default `ml-bass`). `ml-bass`
+(the default) uses kick-band bass events + 16/32-bar phrase snapping on the
+grid-locked lattice; `ml` / `ml-librosa` use librosa Laplacian structure;
+`ml-allin1` uses all-in-one-mlx (optional extra; see `docs/allin1-backend.md`).
+djay's BPM is cross-checked only under ml engines; placement uses beat_this
+downbeats. `apply` still writes absolute seconds.
 
 Use `--library <path>` to target a copy of the DB (do this when testing writes).
 

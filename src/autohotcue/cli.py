@@ -494,10 +494,10 @@ def _add_engine_arg(sp):
     sp.add_argument(
         "--engine",
         choices=_ENGINE_CHOICES,
-        default="ml",
-        help="analysis engine: ml/ml-librosa (librosa structure), "
-        "ml-allin1 (all-in-one-mlx structure), ml-bass (kick-band events), "
-        "legacy (default: ml)",
+        default="ml-bass",
+        help="analysis engine: ml-bass (kick-band events + phrase snapping), "
+        "ml/ml-librosa (librosa structure), ml-allin1 (all-in-one-mlx structure), "
+        "legacy (default: ml-bass)",
     )
 
 

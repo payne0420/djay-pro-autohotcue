@@ -401,6 +401,17 @@ def test_wiring():
     assert cli._is_ml_engine("ml-bass")
 
 
+def test_ml_bass_is_default_engine():
+    import argparse
+    import inspect
+
+    assert inspect.signature(analysis.analyze).parameters["engine"].default == "ml-bass"
+
+    p = argparse.ArgumentParser()
+    cli._add_engine_arg(p)
+    assert p.parse_args([]).engine == "ml-bass"
+
+
 def test_outro_snap_fallback():
     """Audible tail pulls G/H back from the trailing bass-off run near file end."""
     bpm = 124.0
