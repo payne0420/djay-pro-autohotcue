@@ -56,6 +56,7 @@ Run the CLI through uv (no manual venv activation needed):
 uv run autohotcue propose "/path/to/track.opus"              # ml engine (default)
 uv run autohotcue propose "/path/to/track.opus" --engine ml-allin1  # all-in-one structure
 uv run autohotcue propose "/path/to/track.opus" --engine ml-bass   # kick-band + phrase snapping
+uv run autohotcue propose "/path/to/track.opus" --nudge-beats 1     # shift grid anchor +1 beat
 uv run autohotcue propose "/path/to/track.opus" --engine legacy
 uv run autohotcue viz "/path/to/track.opus" map.png          # segments + downbeat ticks
 uv run autohotcue verify "/path/to/track.opus"               # read back cues djay has stored

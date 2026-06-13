@@ -162,6 +162,7 @@ def cmd_propose(args):
                         args.engine,
                         None,
                         jobs,
+                        args.nudge_beats,
                     ): p
                     for p in paths
                 }
@@ -186,6 +187,7 @@ def cmd_propose(args):
                         known_bpm=_djay_bpm_for_path(db, path, args.bpm),
                         engine=args.engine,
                         jobs=1,
+                        nudge_beats=args.nudge_beats,
                     )
                 except Exception as e:
                     if not batch:
@@ -210,6 +212,7 @@ def cmd_viz(args):
         known_bpm=args.bpm,
         engine=args.engine,
         jobs=1,
+        nudge_beats=args.nudge_beats,
     )
     viz.render(args.path, track, prop, args.out, title=Path(args.path).stem)
     print("wrote", args.out)
@@ -351,6 +354,7 @@ def _apply_parallel(db, paths, args, ensure_backup, jobs):
                     args.engine,
                     None,
                     jobs,
+                    args.nudge_beats,
                 ): (i, path, key, existing)
                 for i, path, key, existing, bpm in todo
             }
@@ -418,6 +422,7 @@ def cmd_apply(args):
                         known_bpm=bpm,
                         engine=args.engine,
                         jobs=1,
+                        nudge_beats=args.nudge_beats,
                     )
                     n = _write_one(
                         db, key, existing, track, prop, ensure_backup,
@@ -496,6 +501,16 @@ def _add_engine_arg(sp):
     )
 
 
+def _add_nudge_arg(sp):
+    sp.add_argument(
+        "--nudge-beats",
+        type=float,
+        default=0.0,
+        help="shift the fitted grid by N beats (use for single tracks where "
+        "the downbeat phase is audibly off)",
+    )
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="autohotcue", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -507,6 +522,7 @@ def main(argv=None):
     sp.add_argument("--library", default=None)
     sp.add_argument("-j", "--jobs", type=int, default=1, help=jobs_help)
     _add_engine_arg(sp)
+    _add_nudge_arg(sp)
 
     sp = sub.add_parser("verify")
     sp.add_argument("path", help="audio file, or directory to scan recursively")
@@ -518,6 +534,7 @@ def main(argv=None):
     sp.add_argument("out")
     sp.add_argument("--bpm", type=float, default=None)
     _add_engine_arg(sp)
+    _add_nudge_arg(sp)
 
     sp = sub.add_parser("apply")
     sp.add_argument("path", help="audio file, or directory to scan recursively")
@@ -532,6 +549,7 @@ def main(argv=None):
     )
     sp.add_argument("-j", "--jobs", type=int, default=1, help=jobs_help)
     _add_engine_arg(sp)
+    _add_nudge_arg(sp)
 
     sp = sub.add_parser("bench")
     sp.add_argument("truth_json", help="ground-truth JSON file")

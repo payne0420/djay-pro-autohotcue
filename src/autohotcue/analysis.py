@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -326,6 +326,7 @@ def analyze(
     engine: str = "ml",
     device: str | None = None,
     jobs: int = 1,
+    nudge_beats: float = 0.0,
 ) -> tuple[TrackAnalysis, CueProposal]:
     """Analyze a track and propose cues via the ml or legacy engine."""
     track_engine, structure_backend = normalize_engine(engine)
@@ -348,6 +349,12 @@ def analyze(
     y = decode(path)
     beat = track_beats(y, device=dev)
     grid_fit = fit_grid(y, SR, beat.beats, beat.downbeats, known_bpm)
+    if grid_fit.ok and nudge_beats != 0:
+        bar_period = 4 * 60.0 / grid_fit.render_bpm
+        grid_fit = replace(
+            grid_fit,
+            anchor_s=(grid_fit.anchor_s + nudge_beats * 60.0 / grid_fit.bpm) % bar_period,
+        )
 
     first_beat = float(beat.downbeats[0]) if len(beat.downbeats) else (
         float(beat.beats[0]) if len(beat.beats) else 0.0

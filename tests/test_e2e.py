@@ -59,7 +59,7 @@ def _beats_after(t: float, beats: np.ndarray) -> int:
 
 
 def _check_ordering(pos: dict[str, float]) -> None:
-    """A<=B<=C<D<E<F<=G=H for present cues."""
+    """A<=B<=C<D<E<F<=G<=H for present cues."""
     order = ["A", "B", "C", "D", "E", "F", "G", "H"]
     present = [k for k in order if k in pos]
     prev = None
@@ -73,9 +73,11 @@ def _check_ordering(pos: dict[str, float]) -> None:
             assert cur < pos["E"], f"D={cur} not before E={pos['E']}"
         if letter == "E" and "F" in pos:
             assert cur < pos["F"], f"E={cur} not before F={pos['F']}"
+        if letter == "F" and "G" in pos:
+            assert cur < pos["G"], f"F={cur} not before G={pos['G']}"
         prev = cur
     if "G" in pos and "H" in pos:
-        assert pos["G"] == pos["H"]
+        assert pos["G"] <= pos["H"]
 
 
 def _allin1_prereqs() -> bool:

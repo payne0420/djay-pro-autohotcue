@@ -47,8 +47,12 @@ RETURN_MIN_ON_BARS = 8     # bass-return must sustain this long to be F
 PHRASE_BARS = 8            # snapping lattice (16/32-bar offsets still reported)
 SNAP_MAX_BARS = 2          # max distance moved by phrase snapping
 A_MIN_FRAC = 0.25          # A = first bar with kick RMS >= this * loud_ref
+A_STEADY_FRAC = 0.75       # A bar must also be at level, not mid-fade-in
 MIN_DROP_FRAC = 0.20       # first bass-in must start this far in to count as D (not groove)
-OUTRO_MIN_BARS = 2         # G must leave >= 2 bars (8 beats) before track end
+OUTRO_MIN_BARS = 2         # legacy outro fallback: leave >= 2 bars before track end
+AUDIBLE_FRAC = 0.10        # bar is audible when full-band RMS >= this * p95(bar RMS)
+OUTRO_TAIL_BARS = 16       # G must leave at least this many audible bars
+LOOP_OUT_BARS = 8          # H needs a fully audible loop of this length after it
 MIN_BARS = 24              # below this, place A/B only (short-track convention)
 ```
 
@@ -60,6 +64,7 @@ class BassAnalysis:
     bar_starts: np.ndarray   # bar start times, seconds
     bar_period: float        # seconds per bar (median spacing in fallback mode)
     kick_rms: np.ndarray     # per-bar 30-150 Hz RMS, same length as bar_starts
+    full_rms: np.ndarray     # per-bar full-band RMS over the same bar windows
     bass_on: np.ndarray      # bool per bar, after hysteresis
     loud_ref: float          # LOUD_REF_PCTL percentile of per-bar kick RMS
     phrase_origin: int | None  # A's bar index when phrase snapping is active
@@ -102,6 +107,10 @@ def propose_cues_bass(
    OFF→ON when `kick_rms[i] >= BASS_ON_FRAC * loud_ref`;
    ON→OFF when `kick_rms[i] < BASS_OFF_FRAC * loud_ref`.
    `bass_on[i]` = state after bar i.
+4. `full_rms[i]` = RMS of the raw waveform over bar i's window (same windows as
+   `kick_rms`). `last_audible` = index of the last bar with
+   `full_rms[i] >= AUDIBLE_FRAC * p95(full_rms)`; if none qualify, fall back to
+   `n_bars - 1`.
 
 ### Events (run-length analysis of `bass_on`)
 
@@ -122,9 +131,10 @@ def propose_cues_bass(
 - **F (2nd Drop)** = start bar of the first ON-run with length >=
   `RETURN_MIN_ON_BARS` that starts after E. Omit (with note) when E omitted or
   no candidate.
-- **A (First Beat)** = first bar with `kick_rms >= A_MIN_FRAC * loud_ref`
-  (skips silent/pad bars in front of the lattice). **B = A** (loop-in
-  convention).
+- **A (First Beat)** = first bar with `kick_rms >= A_MIN_FRAC * loud_ref` and
+  either no following bar or `kick_rms[i] >= A_STEADY_FRAC * kick_rms[i + 1]`
+  (the first beat is the first bar at level, not the first bar crossing a low
+  threshold mid-fade-in). **B = A** (loop-in convention).
 - **C (Buildup)** = when D exists and snapping is active: if the OFF-run
   immediately before D begins **after** A's bar (bass was on earlier — a
   build/vocal section, not a plain intro), C is the **start bar of that OFF-run**
@@ -139,13 +149,33 @@ def propose_cues_bass(
   When phrase snapping is disabled (gate-refused / not lattice-locked), a
   pre-drop OFF-run C is still placed at its raw bar like D/E/F — no snapping and
   no off8= notes.
-- **G (Outro)** = start bar of the trailing OFF-run (bass out through the end of
-  the track) when one exists with length >= `OUTRO_MIN_BARS`; else the last
-  phrase boundary (when snapping active) or last bar minus `OUTRO_MIN_BARS`
-  (when not) that leaves >= `OUTRO_MIN_BARS` bars before track end. G must be
-  later than every placed earlier cue, else omit. **H = G**. G must also leave
-  >= `OUTRO_MIN_BARS` bars before track end; a snap that violates this falls
-  back to the raw bar.
+- **G (Outro)** = start of the mix-out section. Outros keep the kick running, so
+  the last bass-out often lands at the file end; G is where you start mixing out.
+  **Hard constraint:** G must be strictly later than every earlier placed cue
+  (A/C/D/E/F when present) — canonical slot order `A<=B<=C<D<E<F<=G<=H` is
+  non-negotiable. **Soft preference:** when possible, leave at least
+  `OUTRO_TAIL_BARS` (16) fully audible bars after G. Preferred candidates are
+  start bars of OFF-runs of `bass_on` with `start <= last_audible -
+  OUTRO_TAIL_BARS`; take the last qualifying candidate. If no OFF-run qualifies,
+  use the last 8-bar phrase boundary in `(earlier_max, last_audible -
+  OUTRO_TAIL_BARS]`. When the preferred window yields nothing (e.g. F sits too
+  late for a 16-bar tail), fall back to the legacy trailing-off-run rule (or last
+  phrase boundary leaving >= `OUTRO_MIN_BARS` bars) and add note
+  `"G/H (Outro): short tail; using legacy placement"`. Snap G on the 8-bar lattice
+  (<= 2 bars) only when the snapped bar still satisfies the hard constraint and
+  (on the preferred path) still leaves >= `OUTRO_TAIL_BARS` audible bars;
+  otherwise keep the raw bar. If nothing valid remains, omit G and H with the
+  existing note. When lattice-locked, emit the same machine-greppable note
+  prefix as D/E/F.
+- **H (Loop Out)** = the last viable exit loop before the audible tail ends.
+  H is the last phrase boundary `b` (8-bar lattice when locked; when not locked,
+  scan bar indices downward from `last_audible + 1 - LOOP_OUT_BARS`) such that
+  every bar in `[b, b + LOOP_OUT_BARS)` is audible (`full_rms >= AUDIBLE_FRAC *
+  p95` per bar). Require `H >= G`; if the computed H `< G`, set `H = G` only when
+  `[G, G + LOOP_OUT_BARS)` is fully audible; add note `"H (Loop Out): clamped to
+  G"`. Otherwise omit H with note `"H (Loop Out): omitted (no audible loop after
+  G)"`. If G is omitted, omit H. When
+  lattice-locked, emit the same note prefix as G.
 - Short tracks: `len(bar_starts) < MIN_BARS` → A/B only plus note
   `"track too short for bass structure analysis; first beat only"`.
 
@@ -170,9 +200,8 @@ def propose_cues_bass(
 
 ### Ordering / final checks
 
-- Reuse `cuepolicy._check_monotonicity` (import it; do not duplicate). The
-  detectors already yield A <= D < E < F by construction; the shared check is a
-  backstop, same notes convention.
+- Reuse `cuepolicy._check_monotonicity` as a backstop (canonical
+  `A<=B<=C<D<E<F<=G<=H`; drops H when G is omitted).
 - When `djay_bpm` is given and `bpm_octave_ratio(beat.bpm, djay_bpm) > 0.02`,
   add the same `"djay says {djay:.1f}, tracked {tracked:.1f}"` note cuepolicy
   uses.
@@ -186,10 +215,17 @@ def propose_cues_bass(
 - `effective_parallel_jobs`: ml-bass fans out like ml (only allin1 is pinned
   to 1) — no change needed beyond the engine being valid.
 - `analyze()`: new branch for `track_engine == "ml-bass"` — decode →
-  `track_beats` → `fit_grid` → `propose_cues_bass(y, SR, beat, grid_fit,
-  djay_bpm=known_bpm)`. No `segment_structure` call. `TrackAnalysis` gains a new
+  `track_beats` → `fit_grid` → optional grid nudge → `propose_cues_bass(...)`.
+  No `segment_structure` call. `TrackAnalysis` gains a new
   field `bass: object | None = None` (a `BassAnalysis` for ml-bass); `segments`
   stays None for this engine.
+
+### Grid nudge
+
+`--nudge-beats N` on `propose`, `viz`, and `apply` shifts the fitted grid anchor
+by N beats after `fit_grid` (modulo one bar). Downstream lattice placement,
+`snap_cues`, and `beatGridEdits` all pick up the shifted anchor automatically.
+Use for single tracks where the downbeat phase is audibly off.
 
 ### `cli.py`
 
@@ -252,8 +288,9 @@ Required cases (assert positions in seconds within half a bar unless stated):
 
 1. **Full layout**: 124 BPM, 96 bars, kick from bar 0, bass on `[32, 64)` and
    `[80, 92)`. Expect A=B=bar 0, C=bar 24 (D−8), D=bar 32 (off8=0), E=bar 64,
-   F=bar 80, G=H=bar 92 (trailing off-run); fit.ok true; all positions on the
-   lattice (`(t - anchor) / bar_period` integral within 1e-6).
+   F=bar 80, G=bar 92 (legacy short tail after F), H=bar 92 (clamped to G);
+   fit.ok true; all positions on the lattice (`(t - anchor) / bar_period`
+   integral within 1e-6).
 2. **Snap +1**: bass-in at bar 33 → D snapped to bar 32; note contains
    `"raw bar 33"` and `"off8=+1"`.
 3. **Off-phrase flag**: bass-in at bar 37 → D stays at bar 37; note contains
@@ -274,7 +311,7 @@ Required cases (assert positions in seconds within half a bar unless stated):
 10. **Wiring**: `normalize_engine("ml-bass") == ("ml-bass", None)`;
    `"ml-bass" in VALID_ENGINES`; `effective_parallel_jobs("ml-bass", 4) == 4`;
    `cli._ENGINE_CHOICES` contains `"ml-bass"` and `cli._is_ml_engine("ml-bass")`.
-11. **Ordering**: in case 1's proposal, assert A <= B <= C < D < E < F <= G == H.
+11. **Ordering**: in case 1's proposal, assert A <= B <= C < D < E < F <= G <= H.
 
 E2E (`tests/test_e2e.py`): add one ml-bass case parametrized over the existing
 `E2E_TRACKS`, with the same missing-file skip guard — run
