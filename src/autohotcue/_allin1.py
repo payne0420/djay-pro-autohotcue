@@ -9,8 +9,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from autohotcue.analysis import HOP, SR, band_energy
-from autohotcue.backends import BeatAnalysis, Segment, StructureAnalysis
+from autohotcue.backends import BeatAnalysis, Segment, StructureAnalysis, energy_ranks_for_segments
 
 ALLIN1_LABELS = frozenset(
     {"intro", "verse", "chorus", "bridge", "break", "inst", "solo", "outro"}
@@ -183,29 +182,6 @@ def _get_model(weights_dir: Path):
     return _model
 
 
-def _energy_ranks_for_segments(
-    y: np.ndarray,
-    sr: int,
-    segments: list[Segment],
-) -> list[Segment]:
-    if not segments:
-        return segments
-    low, _, _, _ = band_energy(y, sr, HOP)
-    energies: list[float] = []
-    for seg in segments:
-        i0 = int(seg.start * sr / HOP)
-        i1 = max(i0 + 1, int(seg.end * sr / HOP))
-        slice_ = low[i0 : min(i1, len(low))]
-        energies.append(float(slice_.mean()) if len(slice_) > 0 else 0.0)
-    from scipy.stats import rankdata
-
-    ranks = (rankdata(energies, method="average") - 1) / max(1, len(energies) - 1)
-    return [
-        Segment(seg.start, seg.end, seg.label, energy_rank=float(r))
-        for seg, r in zip(segments, ranks)
-    ]
-
-
 def _map_allin1_segments(result, duration_s: float) -> list[Segment]:
     segments: list[Segment] = []
     for seg in result.segments:
@@ -298,7 +274,7 @@ def segment_structure_allin1(
         del stems  # ~0.5 GB of MLX stem audio; inference is the memory peak
         result = _functional_result(spec, model)
         segments = _map_allin1_segments(result, beat.duration_s)
-        segments = _energy_ranks_for_segments(y, sr, segments)
+        segments = energy_ranks_for_segments(y, sr, segments)
         return StructureAnalysis(segments=segments, source="allin1")
     finally:
         import mlx.core as mx

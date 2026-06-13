@@ -11,6 +11,7 @@ One self-contained brief per workstream, written to be executed independently
 | 04 | [Fingerprint pairing reverse-engineering](04-fingerprint-pairing-re.md) | nothing (independent) | M |
 | 05 | [Splice gate: sub-60s blind spot](05-splice-gate-sub60s.md) | nothing (independent) | S |
 | 06 | [Half-time parity: resolve instead of refuse](06-half-time-parity-kick-evidence.md) | nothing; nicer after 01 | S |
+| 07 | [SongFormer SDPA/flash memory fix](07-songformer-flash-memory.md) | nothing — **off-machine only** (≥64 GB box) | M |
 
 01 is the critical path: it unblocks 02 and 03 simultaneously and converts all
 future cue-quality work from "audition in djay" to "read a bench table".
@@ -20,4 +21,6 @@ vulnerability on the default branch — triage at
 `github.com/payne0420/djay-pro-autohotcue/security/dependabot/1`.
 
 Context docs: [grid-lock-spec.md](../grid-lock-spec.md) (shipped June 2026),
-[audio-alignment-fingerprint.md](../audio-alignment-fingerprint.md).
+[audio-alignment-fingerprint.md](../audio-alignment-fingerprint.md),
+[songformer-backend.md](../songformer-backend.md) (ml-songformer engine,
+shipped June 2026 — items 03 and 07 are its open threads).

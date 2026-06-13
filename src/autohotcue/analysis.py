@@ -278,7 +278,9 @@ def propose_cues_legacy(
     return grid, p
 
 
-VALID_ENGINES = frozenset({"ml", "ml-librosa", "ml-allin1", "ml-bass", "legacy"})
+VALID_ENGINES = frozenset(
+    {"ml", "ml-librosa", "ml-allin1", "ml-songformer", "ml-bass", "legacy"}
+)
 
 
 def normalize_engine(engine: str) -> tuple[str, str | None]:
@@ -291,15 +293,17 @@ def normalize_engine(engine: str) -> tuple[str, str | None]:
         return "legacy", None
     if engine == "ml-allin1":
         return "ml-allin1", "allin1"
+    if engine == "ml-songformer":
+        return "ml-songformer", "songformer"
     if engine == "ml-bass":
         return "ml-bass", None
     return engine, "librosa"
 
 
 def effective_parallel_jobs(engine: str, jobs: int) -> int:
-    """ml-allin1 loads heavyweight MLX/demucs models; never fan out across workers."""
+    """ml-allin1 / ml-songformer load heavyweight models; never fan out across workers."""
     _, structure_backend = normalize_engine(engine)
-    if structure_backend == "allin1":
+    if structure_backend in ("allin1", "songformer"):
         return 1
     return jobs
 

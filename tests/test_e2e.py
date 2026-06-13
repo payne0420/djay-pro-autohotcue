@@ -1,6 +1,7 @@
 """End-to-end integration tests against real audio tracks and library copies."""
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from pathlib import Path
@@ -94,6 +95,24 @@ def _allin1_prereqs() -> bool:
         return False
 
 
+def _songformer_prereqs() -> bool:
+    try:
+        import importlib
+
+        import transformers  # noqa: F401
+        from huggingface_hub import snapshot_download
+
+        for name in ("muq", "torchaudio", "omegaconf", "loguru", "ema_pytorch", "x_transformers"):
+            importlib.import_module(name)
+
+        from autohotcue._songformer import _MODEL_ID, _hf_revision
+
+        snapshot_download(_MODEL_ID, revision=_hf_revision(), local_files_only=True)
+        return True
+    except Exception:
+        return False
+
+
 @pytest.mark.parametrize("track_path", E2E_TRACKS)
 def test_ml_analyze_real_track(track_path: str):
     if not Path(track_path).is_file():
@@ -163,6 +182,59 @@ def test_ml_allin1_analyze_real_track(track_path: str):
     assert track.downbeats is not None and len(track.downbeats) > 0
     assert track.beats is not None and len(track.beats) > 0
     assert track.segments is not None and len(track.segments) > 0
+
+    for letter, t in prop.positions.items():
+        assert _on_downbeat(t, track.downbeats), (
+            f"{letter}={t:.3f}s not on a tracked downbeat"
+        )
+
+    _check_ordering(prop.positions)
+
+    if "A" in prop.positions:
+        assert prop.positions["A"] <= track.duration_s * 0.25
+
+    if "G" in prop.positions:
+        assert _beats_after(prop.positions["G"], track.beats) >= 8
+
+
+@pytest.mark.skipif(
+    os.environ.get("AUTOHOTCUE_RUN_SONGFORMER_E2E") != "1",
+    reason="opt-in: set AUTOHOTCUE_RUN_SONGFORMER_E2E=1 (forward peaks ~24 GB RAM)",
+)
+@pytest.mark.skipif(not _songformer_prereqs(), reason="ml-songformer prerequisites missing")
+def test_ml_songformer_analyze_real_track(monkeypatch):
+    # CPU forward is ~108 s per 6-min track; run only the first e2e track.
+    track_path = E2E_TRACKS[0]
+    if not Path(track_path).is_file():
+        pytest.skip(f"missing track: {track_path}")
+
+    structure_sources: list[str] = []
+    import autohotcue.backends as backends
+
+    orig_segment_structure = backends.segment_structure
+
+    def _capture_structure_source(path, y, sr, beat, structure_backend="librosa"):
+        out = orig_segment_structure(path, y, sr, beat, structure_backend=structure_backend)
+        structure_sources.append(out.source)
+        return out
+
+    monkeypatch.setattr(backends, "segment_structure", _capture_structure_source)
+
+    t0 = time.perf_counter()
+    track, prop = analysis.analyze(track_path, engine="ml-songformer", jobs=1)
+    elapsed = time.perf_counter() - t0
+    print(f"\n{Path(track_path).name}: ml-songformer analyze() {elapsed:.1f}s")
+
+    assert track.engine == "ml-songformer"
+    assert structure_sources == ["songformer"]
+    assert track.downbeats is not None and len(track.downbeats) > 0
+    assert track.beats is not None and len(track.beats) > 0
+    assert track.segments is not None and len(track.segments) > 0
+
+    for seg in track.segments:
+        assert 0.0 <= seg.start <= track.duration_s
+        assert 0.0 <= seg.end <= track.duration_s
+        assert seg.start < seg.end
 
     for letter, t in prop.positions.items():
         assert _on_downbeat(t, track.downbeats), (

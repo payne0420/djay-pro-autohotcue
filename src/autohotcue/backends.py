@@ -166,6 +166,29 @@ def _label_segments(
     return segments
 
 
+def energy_ranks_for_segments(
+    y: np.ndarray,
+    sr: int,
+    segments: list[Segment],
+) -> list[Segment]:
+    if not segments:
+        return segments
+    low, _, _, _ = band_energy(y, sr, HOP)
+    energies: list[float] = []
+    for seg in segments:
+        i0 = int(seg.start * sr / HOP)
+        i1 = max(i0 + 1, int(seg.end * sr / HOP))
+        slice_ = low[i0 : min(i1, len(low))]
+        energies.append(float(slice_.mean()) if len(slice_) > 0 else 0.0)
+    from scipy.stats import rankdata
+
+    ranks = (rankdata(energies, method="average") - 1) / max(1, len(energies) - 1)
+    return [
+        Segment(seg.start, seg.end, seg.label, energy_rank=float(r))
+        for seg, r in zip(segments, ranks)
+    ]
+
+
 def segment_structure(
     path: str,
     y: np.ndarray,
@@ -178,6 +201,10 @@ def segment_structure(
         from autohotcue._allin1 import segment_structure_allin1
 
         return segment_structure_allin1(path, y, sr, beat)
+    if structure_backend == "songformer":
+        from autohotcue._songformer import segment_structure_songformer
+
+        return segment_structure_songformer(path, y, sr, beat)
     if structure_backend not in ("librosa", "ml"):
         raise ValueError(f"unknown structure backend: {structure_backend}")
     return segment_structure_librosa(path, y, sr, beat)
