@@ -26,7 +26,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
-from autohotcue import analysis, backends, djaydb
+from autohotcue import analysis, backends, djaydb, pipeline
 
 AUDIO_EXTS = {".aac", ".aif", ".aiff", ".flac", ".m4a", ".mp3",
               ".oga", ".ogg", ".opus", ".wav", ".wma"}
@@ -99,6 +99,19 @@ def _is_ml_engine(engine: str) -> bool:
 
 def _grid_lock_enabled(args) -> bool:
     return _is_ml_engine(args.engine) and not getattr(args, "no_grid_lock", False)
+
+
+def _use_pipeline(args, batch: bool, paths: list[str], jobs: int) -> bool:
+    """Decode-ahead pipeline applies to a multi-track folder run on the single
+    MPS-inference path (jobs == 1). ``-j>1`` keeps the CPU process pool; legacy
+    has no separable decode stage."""
+    return (
+        batch
+        and jobs == 1
+        and len(paths) > 1
+        and _is_ml_engine(args.engine)
+        and not getattr(args, "no_pipeline", False)
+    )
 
 
 def _print_grid_fit(track: analysis.TrackAnalysis) -> None:
@@ -175,6 +188,25 @@ def cmd_propose(args):
                         failed += 1
                         continue
                     _print_proposal(track, prop)
+        elif _use_pipeline(args, batch, paths, jobs):
+            backends.init_worker(1)
+            items = [(Path(p).name, p, _djay_bpm_for_path(db, p, args.bpm)) for p in paths]
+            gen = pipeline.iter_analyze_pipelined(
+                items,
+                engine=args.engine,
+                nudge_beats=args.nudge_beats,
+                decode_threads=args.decode_threads,
+            )
+            try:
+                for name, _path, result, err in gen:
+                    print(f"\n{name}", flush=True)
+                    if err is not None:
+                        print(f"  FAILED: {err}")
+                        failed += 1
+                        continue
+                    _print_proposal(*result)
+            finally:
+                gen.close()
         else:
             if jobs == 1:
                 backends.init_worker(1)
@@ -408,6 +440,49 @@ def cmd_apply(args):
     try:
         if batch and jobs > 1 and total > 1:
             written, skipped, failed = _apply_parallel(db, paths, args, ensure_backup, jobs)
+        elif _use_pipeline(args, batch, paths, jobs):
+            backends.init_worker(1)
+            todo = []
+            for i, path in enumerate(paths, 1):
+                try:
+                    key, existing, bpm = _precheck_one(db, path, args)
+                except _Skip as e:
+                    print(f"[{i}/{total}] {Path(path).name}\n  skip: {e}")
+                    skipped += 1
+                    continue
+                todo.append(((i, key, existing), path, bpm))
+            if todo:
+                print(f"analyzing {len(todo)} tracks (decode-ahead pipeline)", flush=True)
+                gen = pipeline.iter_analyze_pipelined(
+                    todo,
+                    engine=args.engine,
+                    nudge_beats=args.nudge_beats,
+                    decode_threads=args.decode_threads,
+                )
+                try:
+                    for (i, key, existing), path, result, err in gen:
+                        print(f"[{i}/{total}] {Path(path).name}", flush=True)
+                        if err is not None:
+                            print(f"  FAILED: {err}")
+                            failed += 1
+                            continue
+                        track, prop = result
+                        try:
+                            n = _write_one(
+                                db, key, existing, track, prop, ensure_backup,
+                                grid_lock=grid_lock, force=args.force,
+                            )
+                        except _Skip as e:
+                            print(f"  skip: {e}")
+                            skipped += 1
+                        except Exception as e:
+                            print(f"  FAILED: {e}")
+                            failed += 1
+                        else:
+                            print(f"  wrote {n} cues")
+                            written += 1
+                finally:
+                    gen.close()
         else:
             if jobs == 1:
                 backends.init_worker(1)
@@ -511,6 +586,22 @@ def _add_nudge_arg(sp):
     )
 
 
+def _add_pipeline_args(sp):
+    sp.add_argument(
+        "--decode-threads",
+        type=int,
+        default=2,
+        help="background decode threads for a folder run at -j1; the decode-ahead "
+        "pipeline overlaps ffmpeg decode with GPU inference (default: 2)",
+    )
+    sp.add_argument(
+        "--no-pipeline",
+        action="store_true",
+        help="disable the decode-ahead pipeline; analyze a folder strictly "
+        "sequentially (for comparison/debugging)",
+    )
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="autohotcue", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -523,6 +614,7 @@ def main(argv=None):
     sp.add_argument("-j", "--jobs", type=int, default=1, help=jobs_help)
     _add_engine_arg(sp)
     _add_nudge_arg(sp)
+    _add_pipeline_args(sp)
 
     sp = sub.add_parser("verify")
     sp.add_argument("path", help="audio file, or directory to scan recursively")
@@ -550,6 +642,7 @@ def main(argv=None):
     sp.add_argument("-j", "--jobs", type=int, default=1, help=jobs_help)
     _add_engine_arg(sp)
     _add_nudge_arg(sp)
+    _add_pipeline_args(sp)
 
     sp = sub.add_parser("bench")
     sp.add_argument("truth_json", help="ground-truth JSON file")
