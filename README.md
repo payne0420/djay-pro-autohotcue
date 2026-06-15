@@ -153,6 +153,17 @@ Two execution modes for a folder run:
 In every mode **database writes stay serialized on the main thread** — only the audio
 analysis is parallelized.
 
+> **Which `-j` should I use? On Apple Silicon, keep the default `-j 1` — it's the
+> fastest *and* the most memory-safe.** `-j` is not "more workers = faster" here:
+> beat_this (the bottleneck) only runs on the **GPU (MPS) at `-j 1`**. Any `-j >1`
+> (including `-j 0`) drops every worker to **CPU** inference *and* loads a separate copy
+> of the model per worker. So fanning out trades one fast GPU stream for many slower CPU
+> streams, and `-j 0` (one worker per core) can load ~N model copies at once — enough to
+> push a 32 GB machine into swap. The decode-ahead + DSP-offload pipeline exists precisely
+> so the single `-j 1` MPS stream runs flat-out (decode + DSP hide *under* inference).
+> Reach for `-j N` only on a machine with no usable GPU, where CPU fan-out is the only
+> parallelism available.
+
 ### Performance
 
 Overlapping decode and DSP with GPU inference makes a folder run roughly inference-bound.
