@@ -196,6 +196,7 @@ def cmd_propose(args):
                 engine=args.engine,
                 nudge_beats=args.nudge_beats,
                 decode_threads=args.decode_threads,
+                dsp_threads=args.dsp_threads,
             )
             try:
                 for name, _path, result, err in gen:
@@ -464,6 +465,7 @@ def cmd_apply(args):
                     engine=args.engine,
                     nudge_beats=args.nudge_beats,
                     decode_threads=args.decode_threads,
+                    dsp_threads=args.dsp_threads,
                 )
                 try:
                     for (i, key, existing), path, result, err in gen:
@@ -599,6 +601,14 @@ def _add_pipeline_args(sp):
         default=2,
         help="background decode threads for a folder run at -j1; the decode-ahead "
         "pipeline overlaps ffmpeg decode with GPU inference (default: 2)",
+    )
+    sp.add_argument(
+        "--dsp-threads",
+        type=int,
+        default=1,
+        help="background DSP threads for CPU-DSP engines (ml-bass/ml/ml-librosa); "
+        "offloads fit_grid + cue proposal off the inference thread so beat_this "
+        "can run back-to-back (default: 1; 0 disables offload)",
     )
     sp.add_argument(
         "--no-pipeline",

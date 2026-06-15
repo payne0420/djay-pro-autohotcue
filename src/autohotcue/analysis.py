@@ -308,6 +308,11 @@ def effective_parallel_jobs(engine: str, jobs: int) -> int:
     return jobs
 
 
+def is_cpu_dsp_engine(engine: str) -> bool:
+    """True when the post-inference stage is pure CPU (ml-bass / ml / ml-librosa)."""
+    return engine in {"ml-bass", "ml", "ml-librosa"}
+
+
 def _resolve_device(device: str | None, jobs: int = 1) -> str:
     """Workers always cpu; mps only when effective jobs == 1."""
     if jobs > 1:
@@ -353,27 +358,27 @@ def analyze(
     )
 
 
-def analyze_decoded(
+def infer_beats(y: np.ndarray, device: str | None = None):
+    """Run beat_this on a decoded array (the GPU/MPS stage)."""
+    from autohotcue.backends import track_beats
+
+    dev = device or _resolve_device(None, 1)
+    return track_beats(y, device=dev)
+
+
+def cues_from_beats(
     y: np.ndarray,
     path: str,
+    beat,
     known_bpm: float | None = None,
     engine: str = "ml-bass",
-    device: str | None = None,
     nudge_beats: float = 0.0,
 ) -> tuple[TrackAnalysis, CueProposal]:
-    """Run the analysis pipeline on an already-decoded mono array.
-
-    This is everything ``analyze`` does after ``decode``, split out so a folder
-    run can decode on background threads and run inference here on the main
-    thread (one MPS context, no model stacking). ``device`` is the resolved
-    torch device; ``None`` resolves as a single-job run would. ``legacy`` is not
-    routed here — it has no separable decode stage."""
-    from autohotcue.backends import segment_structure, track_beats
+    """CPU DSP after inference: grid fit + cue proposal."""
+    from autohotcue.backends import segment_structure
     from autohotcue.gridlock import fit_grid
 
     track_engine, structure_backend = normalize_engine(engine)
-    dev = device or _resolve_device(None, 1)
-    beat = track_beats(y, device=dev)
     grid_fit = fit_grid(y, SR, beat.beats, beat.downbeats, known_bpm)
     if grid_fit.ok and nudge_beats != 0:
         bar_period = 4 * 60.0 / grid_fit.render_bpm
@@ -425,3 +430,24 @@ def analyze_decoded(
         grid_fit=grid_fit,
     )
     return track, prop
+
+
+def analyze_decoded(
+    y: np.ndarray,
+    path: str,
+    known_bpm: float | None = None,
+    engine: str = "ml-bass",
+    device: str | None = None,
+    nudge_beats: float = 0.0,
+) -> tuple[TrackAnalysis, CueProposal]:
+    """Run the analysis pipeline on an already-decoded mono array.
+
+    This is everything ``analyze`` does after ``decode``, split out so a folder
+    run can decode on background threads and run inference here on the main
+    thread (one MPS context, no model stacking). ``device`` is the resolved
+    torch device; ``None`` resolves as a single-job run would. ``legacy`` is not
+    routed here — it has no separable decode stage."""
+    beat = infer_beats(y, device)
+    return cues_from_beats(
+        y, path, beat, known_bpm=known_bpm, engine=engine, nudge_beats=nudge_beats,
+    )
