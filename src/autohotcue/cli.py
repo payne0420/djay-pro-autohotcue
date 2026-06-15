@@ -450,6 +450,12 @@ def cmd_apply(args):
                     print(f"[{i}/{total}] {Path(path).name}\n  skip: {e}")
                     skipped += 1
                     continue
+                except Exception as e:
+                    # Match the sequential path: one bad track must not abort the
+                    # whole folder run (e.g. tsaf.parse / SQLite failure on lookup).
+                    print(f"[{i}/{total}] {Path(path).name}\n  FAILED: {e}")
+                    failed += 1
+                    continue
                 todo.append(((i, key, existing), path, bpm))
             if todo:
                 print(f"analyzing {len(todo)} tracks (decode-ahead pipeline)", flush=True)

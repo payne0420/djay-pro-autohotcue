@@ -184,3 +184,46 @@ def test_cmd_propose_folder_routes_through_pipeline(monkeypatch, tmp_path, capsy
     out = capsys.readouterr().out
     assert "3 analyzed, 0 failed (3 files)" in out
     assert not _decode_threads_alive()
+
+
+def test_cmd_apply_pipeline_precheck_failure_does_not_abort_batch(monkeypatch, tmp_path, capsys):
+    """A generic precheck failure on one track must be reported per-track and the
+    rest of the folder still processed (parity with the sequential -j1 path)."""
+    from autohotcue import cli, djaydb
+
+    for name in ("a.opus", "b.opus", "c.opus"):
+        (tmp_path / name).write_bytes(b"")
+
+    monkeypatch.setattr(cli, "_djay_running", lambda: False)
+
+    class _FakeDB:
+        def backup(self, d): return "backup"
+        def checkpoint(self): pass
+        def close(self): pass
+    monkeypatch.setattr(djaydb, "DjayDB", lambda *a, **k: _FakeDB())
+
+    def fake_precheck(db, path, args):
+        if path.endswith("b.opus"):
+            raise ValueError("corrupt TSAF")  # not a _Skip
+        return (path, None, 120.0)
+    monkeypatch.setattr(cli, "_precheck_one", fake_precheck)
+
+    track = types.SimpleNamespace(
+        engine="ml-bass", bpm=124.0, first_beat_s=0.5, duration_s=10.0, grid_fit=None,
+    )
+    prop = analysis.CueProposal(positions={"A": 0.0}, notes=[])
+    monkeypatch.setattr(pl, "decode", lambda path: path)
+    monkeypatch.setattr(pl, "analyze_decoded", lambda y, path, **k: (track, prop))
+    monkeypatch.setattr(cli, "_write_one", lambda *a, **k: 8)
+
+    args = types.SimpleNamespace(
+        path=str(tmp_path), bpm=None, library="dummy", engine="ml-bass",
+        nudge_beats=0.0, jobs=1, decode_threads=2, no_pipeline=False,
+        force=False, no_grid_lock=False, backup_dir=str(tmp_path / "bk"),
+    )
+    cli.cmd_apply(args)
+
+    out = capsys.readouterr().out
+    assert "FAILED: corrupt TSAF" in out
+    assert "2 written, 0 skipped, 1 failed (3 files)" in out
+    assert not _decode_threads_alive()
